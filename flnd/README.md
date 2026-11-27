@@ -3,7 +3,8 @@
 flnd downloads photos, videos and files from the sites you follow, and keeps them up to date.
 It is a command line, and new sites are added as built-in plugins.
 Built in: Instagram (`ins`), TikTok (`tik`), Twitter/X (`twt`), Facebook (`fbk`), Threads
-(`thr`), LOIBUS (`loi`), mimihentai (`mht`), SimpCity (`smp`), and `web` for any other link.
+(`thr`), LOIBUS (`loi`), mimihentai (`mht`), SimpCity (`smp`), pixiv (`pxv`), and `web` for any
+other link.
 
 ## Install
 

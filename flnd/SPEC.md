@@ -131,7 +131,7 @@ Refusals, with the text printed (all `UsageError`, exit 2, before any request):
 - (empty): `a target can't be empty`
 - `example_user`: `which plugin is "example_user"? Write it as tik:example_user, fbk:example_user,
   ins:example_user, ...`
-- `nope:x`: `no plugin named nope`; hint `Plugins: tik, fbk, ins, thr, twt, loi, mht, smp, web`
+- `nope:x`: `no plugin named nope`; hint `Plugins: tik, fbk, ins, thr, twt, loi, mht, smp, pxv, web`
 - `ins:`: `ins: write a value after ins:`; hint `Write it like <every form of the plugin>`
 - `ins:%`: `ins: can't read '%'`; hint `Write it like <every form of the plugin>`
 - `ins:example_user|nope`: `ins has no category nope`; hint `Categories: posts, reels, tagged,
@@ -290,6 +290,25 @@ Refused:
 `/conversations`, `/account` and `/posts`, with `smp: that page isn't supported; give a thread or a
 post: smp:<id>, smp:post/<id>` (a post route comes in a later step).
 
+**pxv**
+
+| Form | Route | Reads |
+| --- | --- | --- |
+| `pxv:<id>`, `pixiv.net/users/<id>`, `/<lang>/users/<id>` (digits) | `user` | the profile |
+| `pixiv.net/member.php?id=<id>`, `/member_illust.php?id=<id>` (old links) | `user` | the same |
+| `pxv:artwork/<id>`, `pixiv.net/artworks/<id>`, `/<lang>/artworks/<id>` | `artwork` | one work |
+| `pixiv.net/i/<id>`, `/member_illust.php?illust_id=<id>` (old links) | `artwork` | the same |
+
+A link's tab (`/illustrations`, `/manga`, `/bookmarks/artworks`) is ignored. `pixiv.me/<name>` has
+no route: the resolver follows it to `/users/<id>`. Only a user's number is a target:
+`pxv:example_user` is `pxv: a pixiv user is written by its number: pxv:12345678`, hint `the number
+in pixiv.net/users/<number>; a pixiv.me/<name> link works too`. Refused with `pxv: <what> isn't
+supported; give a user or an artwork: pxv:12345678, pxv:artwork/12345678`: `pixiv.net/` alone,
+series (`/novel/series/...`, `/user/<id>/series/...`), `/ranking.php`, `/discovery`, `/request`,
+`/bookmark_new_illust.php`, `/stacc`, `/settings`, `/dashboard`, `/tags` (search comes later),
+`sketch.pixiv.net` and `comic.pixiv.net`. `pxv:artwork/5|manga` is `pxv:artwork/5 is one post, with
+no categories`. Novels (`pxv:novel/<id>`) and tag search (`pxv?<words>`) are not built yet.
+
 **web**
 
 | Form | Route | Reads |
@@ -356,6 +375,7 @@ A category is one part of a target that can be got alone. Each plugin's list is 
 | `loi` | `archive photo` | none |
 | `mht` | `chapters cover` | none |
 | `smp` | `images videos` | none |
+| `pxv` | `illusts manga` | none |
 | `web` | none | none |
 
 Write the list after `|`, and quote the target, since `|` is the shell's pipe:
@@ -410,6 +430,7 @@ name):
 | `fbk` video, reel, photo | `videos`, `reels`, `photos` | `media/fbk/<owner>/<category>/` |
 | `fbk` post | `posts` | `media/fbk/<owner>/posts/` |
 | `loi` post | `archive`, `photo` | `media/loi/<author>/<post> <title>/` |
+| `pxv` artwork | `illusts`, `manga` | `media/pxv/<user id>/<category>/` |
 
 The owner is the post's: `user.username`, `screen_name`, `uniqueId`, a Facebook vanity name else its
 id. With no owner in the data the post goes where it always did, `media/<code>/<post id>/`, with no
@@ -455,8 +476,8 @@ segment  = text and {field} / {field:format} / {field.attr} / {field[0]}; {{ and
 | plugin fields | each plugin's `fields`, listed below the table |
 
 Plugin fields: `ins` `album`; `twt` `part n`; `tik` `part album idx`; `fbk` `part album`;
-`loi` `author title part`; `mht` `title order author genres chapters`; `smp` none; `web` `name`;
-a plugin of your own declares its `fields`.
+`loi` `author title part`; `mht` `title order author genres chapters`; `smp` none;
+`pxv` `title user`; `web` `name`; a plugin of your own declares its `fields`.
 
 Rendering: each `/` segment is filled alone. A missing or empty field drops the separators
 (`_ - space . : ,`) next to it, and a segment that comes out empty is left out, so `{date}_{target}`
@@ -1136,6 +1157,44 @@ up to 32.
   route, `links`, `hosted` category, attachments or file hosts but goonbox and turbo yet; host API
   shapes are unverified live.
 - **Saved as:** `media/smp/123/images/2026-01-01_456_name.jpg`
+
+### pxv (pixiv)
+
+- **Reads:** pixiv's web JSON API over HTTP, `www.pixiv.net/ajax/...`; no browser. A user's works:
+  `GET /ajax/user/<id>/profile/all` once for the run (`illusts` and `manga` are objects keyed by
+  work id, or `[]` when empty), the ids sorted as numbers, newest first, then
+  `/profile/illusts?ids[]=...&work_category=illustManga&is_first_page=0`, 100 ids a request
+  (`body.works` by id); both are kept for the run and shared by the categories. A post's files
+  are lazy: `/ajax/illust/<id>/pages`, `body[].urls.original`. A date is `createDate` as Unix
+  seconds. A single artwork: `/ajax/illust/<id>`, whose `userId` owns it and whose `illustType`
+  gives its category (an ugoira, type 2, is skipped with a warning); a one-page work uses
+  `urls.original`, any other `/pages`. `sign` adds `Referer: https://www.pixiv.net/` and `Accept:
+  application/json` to `/ajax/` requests, and each post carries the Referer for its images.
+- **Categories:** `illusts` (`illustType` 0), `manga` (1), both own and newest first. With a sync
+  head (`ctx.head`), once a whole batch's newest `createDate` is strictly older than the head's
+  time, no more batches are asked for, so a caught-up profile costs 2 requests.
+- **Folder:** `{category}`, under `media/pxv/<user id>/`. **Filename:** `{date}_{post}_p{num}`
+  (`p<num>` is pixiv's own page number). **Key:** `{post}_{num}`. **Fields:** `title`, `user` (the
+  display name), never in the defaults.
+- **Login:** `PHPSESSID`, optional. Logged out, R-18 works are hidden.
+- **Errors:** read from the status, `error` and the body's shape, never the message text. 404, or
+  `error` on a 200, is `NotFound`; 400 or 403 with `error` is `Hidden` (with the hint `log in:
+  flnd auth login pxv <file>` when logged out), not a login error; 401 is `LoginError`; 429 is a
+  block held for `Retry-After` when given; a 403 with `cf-mitigated` is `Blocked` (`pxv: pixiv.net
+  wants a captcha`, not retried; a browser window for it is a later step); HTML, or no `body`, is
+  `Changed`. A work with `isMasked`, or a thumbnail on `s.pximg.net/common/images/limit_...`, is
+  `Hidden`, only that post: `sanity_level` hints `log in, and turn on R-18 (and R-18G) in pixiv's
+  settings: Viewing restrictions`, `mypixiv` hints `only the artist's My pixiv friends can see it`,
+  `unviewable` has no hint.
+- **Limits and walls:** pace 2 s plus up to 2 s of jitter (2 to 4 s) before each API request; a 30
+  to 60 s break every 100 API requests; at most `requests_per_hour` (default 900, `[plugins.pxv]`)
+  API requests an hour, counted in the plugin's state, then it pauses until the hour turns (`pxv:
+  pausing until 14:00 UTC, hourly request budget`). Images: 4 at once from `i.pximg.net`.
+- **Known gaps:** not built yet: the captcha window, `ugoira`, `novels`, `profile`, `shiori` and
+  `novelshiori` categories, novel targets and tag search. A work edited later isn't seen by a
+  sync; a user's private works are never listed. Answer shapes beyond the live checks are
+  unverified.
+- **Saved as:** `media/pxv/12345678/illusts/2026-01-02_123456789_p0.png`
 
 ### web (the web)
 

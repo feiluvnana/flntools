@@ -23,7 +23,7 @@ PLUGINS_DIR = Path(__file__).resolve().parent.parent / "src" / "plugins"
 # The SDKs a built-in plugin may import (inside a function), beside flnd.plugin and the
 # standard library: LOIBUS's decryption.
 SDKS = ("cryptography",)
-CODES = ["tik", "fbk", "ins", "thr", "twt", "loi", "mht", "smp", "web"]
+CODES = ["tik", "fbk", "ins", "thr", "twt", "loi", "mht", "smp", "pxv", "web"]
 
 
 def loaded_after(code: str) -> list[str]:
@@ -142,6 +142,7 @@ class BuiltInTest(unittest.TestCase):
             "loi": (("access-token",), 1.5, True, False, {"api.moegoat.com": 2}),
             "mht": ((), 0.5, True, False, {}),
             "smp": ((), 5.0, True, False, {}),
+            "pxv": (("PHPSESSID",), 2.0, True, False, {"i.pximg.net": 4}),
             "web": ((), 0.5, True, False, {}),
         }
         logins = {"mht": None, "web": None}
@@ -165,6 +166,7 @@ class BuiltInTest(unittest.TestCase):
             "loi": ("archive photo", "post"),
             "mht": ("chapters cover", "chapter"),
             "smp": ("images videos", ""),
+            "pxv": ("illusts manga", "artwork"),
             "web": ("", "page"),
         }
         for code, plugin in built_in().items():
