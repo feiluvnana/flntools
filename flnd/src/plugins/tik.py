@@ -12,7 +12,7 @@ from collections import deque
 from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from pathlib import PurePosixPath
 from typing import Any
-from urllib.parse import quote_plus, urlsplit
+from urllib.parse import urlsplit
 
 from flnd.plugin import (
     Blocked,
@@ -31,7 +31,6 @@ from flnd.plugin import (
     Response,
     SiteError,
     Stream,
-    Target,
     best,
     cookies,
     dig,
@@ -98,8 +97,6 @@ FEEDS = {
     "liked": ("/api/favorite/item_list",),
     "favorites": ("/api/user/collect/item_list",),
 }
-# The search page's answers (unconfirmed live, 2026-11-20).
-SEARCH_API = "/api/search/item/full/"
 # Each clicked tab's `data-e2e` name.
 TABS = {"reposts": "repost-tab", "liked": "liked-tab", "favorites": "favorites-tab"}
 
@@ -364,10 +361,11 @@ class TikTok(Plugin):
                 pass
         return None
     unsupported = {
-        f"tiktok.com/{path}": f"{why} aren't supported; give a user, a post or a search"
+        f"tiktok.com/{path}": f"{why} aren't supported; give a user or a post"
         for path, why in (("tag", "hashtag pages"), ("music", "sound pages"),
                           ("discover", "discover pages"), ("live", "live streams"),
-                          ("explore", "the explore page"))
+                          ("explore", "the explore page"),
+                          ("search", "search pages"))
     }
     # Names and keys as they always were: `<date>_<post>` and `<post>` for a video, and
     # `<date>_<post>_<n>` and `<post>_<n>` for the n-th photo (from 1). A changed key downloads
@@ -413,47 +411,6 @@ class TikTok(Plugin):
                            hint="check the link in a browser; only video and photo links work")
         for post in await embed(ctx, found[1]):
             yield post
-
-    @route("tik?{query}", r"tiktok.com/search?q={query:.+}", newest_first=False)
-    async def search(self, ctx: Ctx, query: str) -> AsyncIterator[Target]:
-        """A search's posts, such as `tik?cats`, each as `tik:post/<id>`: the Videos tab
-        scrolled in the browser, its `api/search/item/full/` answers read.
-
-        Raises:
-            Blocked: a captcha nobody solved, held until the engine's holds run out.
-        """
-        url = f"{SITE}/search/video?q={quote_plus(query)}"
-        seen: set[str] = set()
-        reloads = 0
-        got_new = False
-        while True:
-            feed = ctx.feed(SEARCH_API, scroll=True, cursor=search_state, resume=False)
-            await ctx.open(url)
-            await ctx.pause(SETTLE, "letting the search settle")
-            await wait_out(ctx, url)
-            try:
-                async with feed:
-                    async for data in filled(ctx, feed, search_state):
-                        for found in dig(data, "item_list || itemList") or []:
-                            post_id = str(dig(found, "id") or "")
-                            if post_id and post_id not in seen:
-                                seen.add(post_id)
-                                got_new = True
-                                yield Target(f"tik:post/{post_id}")
-                        if not (search_state(data) or (False,))[0]:
-                            break
-                break
-            except Blocked as error:
-                if not error.retryable:
-                    raise
-                if (reloads > 0 and not got_new) or reloads >= 6:
-                    if getattr(ctx, "listing", None) is not None:
-                        ctx.listing.stalled = True
-                    raise Blocked(f"{error} (no progress after reload)",
-                                  wait=error.wait, retryable=False) from None
-                await ctx.hold("rate limited", seconds=error.wait, reset=got_new)
-                reloads += 1
-                got_new = False
 
     # The `@` is in the link's pattern, so `tiktok.com/@@example_creator` is refused.
     @route("tik:{user}", r"tiktok.com/@{user:[\w.]+}", newest_first=False)
@@ -691,15 +648,6 @@ def page_state(data: Any) -> tuple[bool, str | None] | None:
         return None
     cursor = data.get("cursor")
     return more, str(cursor) if cursor not in (None, "") else None
-
-
-def search_state(data: Any) -> tuple[bool, str | None] | None:
-    """`(more, cursor)` of a search or follow list answer (`has_more` or `hasMore`), or None."""
-    if not isinstance(data, dict) or not {"has_more", "hasMore"} & data.keys():
-        return None
-    cursor = data.get("cursor")
-    return bool(data.get("has_more", data.get("hasMore"))), (
-        str(cursor) if cursor not in (None, "") else None)
 
 
 def page_user(data: Any) -> dict[str, Any]:

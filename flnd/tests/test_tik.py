@@ -18,6 +18,8 @@ import no_profiles  # noqa: F401
 from fakes import filed
 from plugin_kit import FakeCtx, FakePage, Reply, Sent, check, collect
 
+from flnd.engine.plugins import PLUGINS
+from flnd.engine.resolve import Manifest, resolve
 from flnd.errors import (
     Blocked,
     Changed,
@@ -28,7 +30,7 @@ from flnd.errors import (
     SiteError,
     UsageError,
 )
-from flnd.plugin import Range, Target
+from flnd.plugin import Range
 from flnd.plugins.tik import Profile, TikTok, best_video
 from flnkit import html
 
@@ -232,9 +234,6 @@ class RoutesTest(unittest.TestCase):
             ("https://vm.tiktok.com/ZMabc123/", ("short", "short/ZMabc123")),
             ("vt.tiktok.com/ZSabc-1", ("short", "short/ZSabc-1")),
             ("https://www.tiktok.com/t/ZTabc123/", ("short", "short/ZTabc123")),
-            ("tik?cats", ("search", "cats")), ("tik?cats | dogs", ("search", "cats | dogs")),
-            ("https://www.tiktok.com/search?q=cats", ("search", "cats")),
-            ("https://www.tiktok.com/search/video?q=cat+dogs&lang=en", ("search", "cat dogs")),
             ("tik:me", ("user", "me")),
             ("notiktok.com/@example_creator", None), ("tiktok.com.evil.example/@x", None),
         ]:
@@ -249,14 +248,21 @@ class RoutesTest(unittest.TestCase):
             ("https://www.tiktok.com/discover/cats", "discover pages"),
             ("https://www.tiktok.com/live", "live streams"),
             ("https://www.tiktok.com/explore", "the explore page"),
-            ("tik?", "the query is empty"),
+            ("https://www.tiktok.com/search?q=x", "search pages"),
+            ("https://www.tiktok.com/search/video?q=x", "search pages"),
         ]:
             with self.subTest(text=text), self.assertRaisesRegex(UsageError, message):
                 TikTok.resolve(text)
 
+    def test_a_search_is_refused_before_any_request(self):
+        manifest = Manifest(PLUGINS)
+        for text in ("tik?x", "https://www.tiktok.com/search?q=x"):
+            with self.subTest(text=text), self.assertRaises(UsageError):
+                resolve(text, manifest=manifest, known={})
+
     def test_the_declarations(self):
-        self.assertEqual([str(found) for found in check(TikTok)][:3], [
-            "tik:post/7301234567890123456", "tik?cats", "tik:example_creator"])
+        self.assertEqual([str(found) for found in check(TikTok)][:2], [
+            "tik:post/7301234567890123456", "tik:example_creator"])
         user = next(known for known in TikTok.routes if known.kind == "user")
         self.assertEqual([(c.name, c.own, c.newest_first) for c in user.categories], [
             ("videos", True, True), ("stories", True, False), ("playlists", True, True),
@@ -521,30 +527,6 @@ class ProfileTest(unittest.TestCase):
             return [[item async for item in profile.stories(ctx)] for _ in range(2)]
 
         self.assertEqual([len(items) for items in asyncio.run(twice())], [3, 0])
-
-
-class SearchTest(unittest.TestCase):
-    URL = f"{API}/search/video?q=cat+dogs"
-
-    def search(self, *feeds, page=""):
-        plugin = TikTok()
-        ctx = FakeCtx(plugin, "tik?cat dogs", pages={self.URL: FakePage(page, feeds=feeds)})
-        return listed_targets(plugin.search(ctx, "cat dogs"))[0], ctx
-
-    def test_each_hit_is_a_post_target_once(self):
-        answer = f"{API}/api/search/item/full/"
-        found, ctx = self.search(
-            (answer, {"item_list": [{"id": "1"}, {"id": "2"}], "has_more": 1, "cursor": "2"}),
-            (answer, {"item_list": [{"id": "2"}, {"id": "3"}], "has_more": 0}))
-        self.assertEqual(found, [Target("tik:post/1"), Target("tik:post/2"),
-                                 Target("tik:post/3")])
-        self.assertEqual(ctx.seen.visited, [self.URL])
-        self.assertEqual(TikTok.resolve(str(found[0])).kind, "post")
-
-    def test_a_captcha_is_waited_out(self):
-        found, ctx = self.search(page=CAPTCHA)
-        self.assertEqual(found, [])
-        self.assertTrue(ctx.seen.holds or ctx.seen.handoffs)
 
 
 class ShortLinkTest(unittest.TestCase):

@@ -161,10 +161,10 @@ A link that a short link led to adds ` (from <what you typed>)` to `can't read`.
 
 ### Searches and `--limit`
 
-- A search (`twt?<words>`, `mht?<words>`, `tik?<words>`, `loi?<words>`, or a search link) finds
-  targets, and each found target is got as its own. A search needs `--folder`, which puts all its
-  hits in one place ([A search needs a folder](#a-search-needs-a-folder)). A followed search gets
-  only the targets it had not found before.
+- A search (`twt?<words>`, `mht?<words>`, `loi?<words>`, or a search link) finds targets, and
+  each found target is got as its own. A search needs `--folder`, which puts all its hits in
+  one place ([A search needs a folder](#a-search-needs-a-folder)). A followed search gets only
+  the targets it had not found before.
 - `--limit N` (at least 1) is at most N posts per target, or N targets per search or other
   discovering route (`mht:author/...`, `mht:genre/...`, `loi:author/...`). `--limit 0` is `limit
   must be at least 1`.
@@ -224,13 +224,10 @@ read), `intent`, `compose`, `login`; `x.com/` alone.
   ``short``). It is opened in the browser and read from the video it lands on; a landing that is no
   video or photo post is `NotFound` with the hint `check the link in a browser; only video and photo
   links work`.
-- `tik?<words>`, `tiktok.com/search?q=<words>`, `tiktok.com/search/video?q=<words>`: a search (route
-  ``search``). The Videos tab's `api/search/item/full/` is paged like a profile's, each hit found as
-  `tik:post/<id>`, so `--limit N` is N posts. It needs `--folder`.
 
-`tik:123` (under 16 digits) is a user. Refused with `tik: <what> aren't supported; give a user, a
-post or a search`: `tiktok.com/tag/...` (hashtag pages), `/music/...` (sound pages),
-`/discover/...`, `/live`, `/explore`. Also refused: `@@user`, any other `tiktok.com` link.
+`tik:123` (under 16 digits) is a user. Refused with `tik: <what> aren't supported; give a user or a
+post`: `tiktok.com/tag/...` (hashtag pages), `/music/...` (sound pages), `/discover/...`, `/live`,
+`/explore`, `/search...` (search pages). Also refused: `@@user`, any other `tiktok.com` link.
 
 **fbk**
 
@@ -996,7 +993,7 @@ up to 32.
 ### tik (TikTok)
 
 - **Reads:** a profile in the browser, its lists scrolled to their end. One post from the embed
-  page; a search and short link in the browser (see Targets).
+  page; a short link in the browser (see Targets).
 - **Categories:** `videos` NF, `stories`, `playlists` NF, `profile` (own); `reposts`, `liked`,
   `favorites` (opt-in; the last two only if public). `videos` and `playlists` share one scroll.
 - **Folder:** `{part}/{album}`: `part` is `videos` or `images` for a post, `albums` for a playlist
