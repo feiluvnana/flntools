@@ -170,8 +170,9 @@ class FormsTest(unittest.TestCase):
         self.assertFalse(Pixiv.login.required)
         self.assertEqual(dict(Pixiv.limits), {"i.pximg.net": 4})
         self.assertEqual((Pixiv.pace, Pixiv.folder, Pixiv.filename, Pixiv.key, Pixiv.fields),
-                         (2.0, "{category}", "{date}_{title:.40}_{post}_p{num}", "{post}_{num}",
-                          ("title", "user", "name")))
+                         (2.0, "{category}/{series:.40}_{series_id}",
+                          "{date}_{title:.40}_{post}_p{num}", "{post}_{num}",
+                          ("title", "user", "name", "series", "series_id")))
 
 
 class ReaderTest(unittest.TestCase):
@@ -836,6 +837,72 @@ class NovelFilesTest(unittest.TestCase):
             novel_files(None)
 
 
+class SeriesTest(unittest.TestCase):
+    """A work in a series is filed in `<category>/<series>_<series id>/`."""
+
+    def ctx(self, manga, serial, changed=28):
+        """User 12345678's manga, one a day, and its series `{id: [work ids, newest first]}`,
+        each last changed on day `changed`."""
+        works = {str(n): work(n, kind=1, day=n) for n in manga}
+
+        def page(request):
+            parts = urlsplit(request.url)
+            at = int(parse_qs(parts.query)["p"][0])
+            found = serial[parts.path.rsplit("/", 1)[1]]
+            return ok({"page": {"total": len(found), "series": [
+                {"workId": str(id), "order": 0} for id in found[(at - 1) * 12:at * 12]]}})
+
+        routes = {f"{AJAX}/user/{USER}/profile/all": ok({
+            "illusts": [], "manga": listed(*manga), "novels": [], "mangaSeries": [
+                {"id": id, "title": f"series {id}", "updateDate": f"2026-01-{changed:02d}"
+                 "T12:00:00+09:00"} for id in serial]}),
+            f"{AJAX}/user/{USER}/profile/illusts": batch(works)}
+        routes.update({f"{AJAX}/series/{id}": page for id in serial})
+        routes.update({f"{AJAX}/illust/{id}/pages": pages(id) for id in works})
+        return FakeCtx(Pixiv, f"pxv:{USER}", routes=routes)
+
+    def test_a_series_work_has_its_folder_and_a_one_shot_has_none(self):
+        ctx = self.ctx(range(1, 6), {"60": [4, 2]})
+        found = collect(Pixiv, f"pxv:{USER}", ctx=ctx, categories=["manga"])
+        self.assertEqual([one.path for one in found], [
+            "Example_12345678/manga/2026-01-05_title_5_5_p0.png",
+            "Example_12345678/manga/series_60_60/2026-01-04_title_4_4_p0.png",
+            "Example_12345678/manga/2026-01-03_title_3_3_p0.png",
+            "Example_12345678/manga/series_60_60/2026-01-02_title_2_2_p0.png",
+            "Example_12345678/manga/2026-01-01_title_1_1_p0.png"])
+        self.assertEqual([one.key for one in found][:2], ["5_0", "4_0"])
+        self.assertEqual(asked(ctx).count("/series/60?p=1"), 1)
+
+    def test_pages_are_read_only_as_far_back_as_the_works(self):
+        ctx = self.ctx(range(1, 28), {"60": list(range(27, 0, -1))})
+
+        async def first(count):
+            user = await ctx._plugin.user(ctx, USER)
+            found = []
+            async for post in ctx._plugin.manga(ctx, user):
+                found.append(post)
+                if len(found) == count:
+                    return found
+
+        asyncio.run(first(13))
+        self.assertEqual([url for url in asked(ctx) if "/series/" in url],
+                         ["/series/60?p=1", "/series/60?p=2"])
+
+    def test_a_series_changed_before_a_work_is_not_read(self):
+        ctx = self.ctx([5], {"60": [3]}, changed=4)
+        (one,) = run(ctx, "manga")
+        self.assertEqual((one.fields["series"], one.fields["series_id"]), ("", ""))
+        self.assertFalse([url for url in asked(ctx) if "/series/" in url])
+
+    def test_a_single_work_reads_its_series_from_its_own_answer(self):
+        shown = {**work(5, kind=1, day=2), "urls": {"original": f"{CDN}/5_p0.png"},
+                 "seriesNavData": {"seriesId": 60, "title": "a/b", "order": 3}}
+        ctx = FakeCtx(Pixiv, "pxv:artwork/5", routes={f"{AJAX}/illust/5": ok(shown)})
+        (one,) = collect(Pixiv, "pxv:artwork/5", ctx=ctx)
+        self.assertEqual(one.path, "Example_12345678/manga/a_b_60/2026-01-02_title_5_5_p0.png")
+        self.assertEqual(asked(ctx), ["/illust/5"])
+
+
 class NovelListTest(unittest.TestCase):
     def novels(self, ids, head=None, count=None, **more):
         works = {str(n): work(n, day=1 + n * 27 // max(1, (count or max(ids))), **more)
@@ -864,6 +931,11 @@ class NovelListTest(unittest.TestCase):
         ctx = self.novels(range(1, 251), head={"id": "250", "ts": stamp(28)})
         run(ctx, "novels")
         self.assertEqual(len([url for url in asked(ctx) if "profile/novels" in url]), 2)
+
+    def test_a_novel_in_a_series_has_its_folder(self):
+        ctx = self.novels([5], seriesId="70", seriesTitle="saga")
+        found = collect(Pixiv, f"pxv:{USER}", ctx=ctx, categories=["novels"])
+        self.assertEqual(found[0].path, "Example_12345678/novels/saga_70/2026-01-02_title_5_5.md")
 
     def test_files_are_lazy_and_use_the_category_folder_and_key(self):
         ctx = self.novels([5])

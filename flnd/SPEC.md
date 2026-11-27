@@ -1278,7 +1278,16 @@ up to 32.
   work; the engine keeps the root the first save gave, so a rename on pixiv never moves a folder
   (see [`root`](#root)). For `shiori`, `novelshiori` and `profile` it is the account's own,
   from `GET /ajax/user/<id>?full=1` (`body.name`) once a run; the other categories don't ask.
-- **Folder:** `{category}`, under `media/pxv/<name>_<user id>/`. **Filename:**
+- **Folder:** `{category}/{series:.40}_{series_id}`, under `media/pxv/<name>_<user id>/`: a work
+  in a series is in its series' folder (`manga/<series title>_<series id>/`), one in none is in
+  `<category>/`. `shiori`, `novelshiori` and `profile` have no series folder. A novel's series
+  is in its batch answer (`seriesId`, `seriesTitle`); a single work's or novel's is its
+  `seriesNavData`. An artwork's series comes from the `mangaSeries` of `profile/all` and each
+  series' own list, `GET /ajax/series/<id>?p=<n>` (12 works a page, newest first): a series is
+  read page by page only until its least work id read is at or below the work's, once a run,
+  and a series whose `updateDate` is older than the work's `createDate` is never read. The
+  history key doesn't hold the folder, so a work put in a series after it was saved stays where
+  it is. **Filename:**
   `{date}_{title:.40}_{post}_p{num}`
   (`title` is the work's own title; `p<num>` is pixiv's own page number); a novel's files set
   their own names (see Novels).

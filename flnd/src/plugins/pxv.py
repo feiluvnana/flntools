@@ -5,6 +5,7 @@ read over HTTP from pixiv's web JSON API. See SPEC.md#pxv-pixiv.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import datetime
 import functools
 import html
@@ -56,10 +57,14 @@ BREAK = (30.0, 60.0)
 JITTER = 2.0
 # Work ids asked for in one `profile/illusts` request.
 BATCH = 100
+# Works on one page of an artwork series.
+SERIES_PAGE = 12
+# A work's folder under its category: its series, when it is in one.
+SERIES = "{series:.40}_{series_id}"
+NO_SERIES = {"series": "", "series_id": ""}
 # What pixiv shows in a work's thumbnail when the login may not see it: `limit_<why>_<size>`.
 LIMIT = re.compile(r"//s\.pximg\.net/common/images/limit_([a-z_]+?)(?:_\d+)?\.\w+")
 LIMIT_HINTS = {"sanity_level": SANITY_HINT, "mypixiv": FRIENDS_HINT}
-# What the engine's filename cleaner replaces, and the runs it squeezes to one `_`.
 # What a user's number must be, as a page's user is only ever its number.
 NAME = re.compile(r"@?[\w.-]+")
 # The illustType each own category yields, and the kind of list it reads in `profile/all`.
@@ -110,10 +115,10 @@ class Pixiv(Plugin):
     # `name` is the display name of the account that owns the work; the engine keeps the folder
     # name the first save gave.
     root = "{name}_{target}"
-    folder = "{category}"
+    folder = f"{{category}}/{SERIES}"
     filename = "{date}_{title:.40}_{post}_p{num}"
     key = "{post}_{num}"
-    fields = ("title", "user", "name")
+    fields = ("title", "user", "name", "series", "series_id")
     unsupported = _refused()
 
     class Settings(Plugin.Settings):
@@ -191,7 +196,8 @@ class Pixiv(Plugin):
             files = (File(_image(id, urls["original"])),)
         else:
             files = functools.partial(self._pages, ctx, id)
-        yield _post(id, body, files, owner=str(owner), category=category)
+        yield _post(id, body, files, owner=str(owner), category=category,
+                    **_series(body.get("seriesNavData")))
 
     @route(*((pattern, "novel/{id}") for pattern in (
         r"pxv:novel/{id:\d+}", r"pixiv.net/novel/show.php?id={id:\d+}",
@@ -215,7 +221,8 @@ class Pixiv(Plugin):
         if hidden is not None:
             raise hidden
         files = functools.partial(self._novel, ctx, id, None, body)
-        yield _post(id, body, files, owner=str(owner), category="novels")
+        yield _post(id, body, files, owner=str(owner), category="novels",
+                    **_series(body.get("seriesNavData")))
 
     @route(*(pattern for pattern in (
         r"pxv:{id:\d+}", r"pixiv.net/users/{id:\d+}", r"pixiv.net/*/users/{id:\d+}",
@@ -240,13 +247,13 @@ class Pixiv(Plugin):
         async for post in self._posts(ctx, user, "manga"):
             yield post
 
-    @user.category(folder="ugoira")
+    @user.category(folder=f"ugoira/{SERIES}")
     async def ugoira(self, ctx: Ctx, user: str) -> AsyncIterator[Post]:
         """The animations (`illustType` 2), newest first, saved as MP4."""
         async for post in self._posts(ctx, user, "ugoira"):
             yield post
 
-    @user.category(folder="novels", key="novel_{post}_{num}")
+    @user.category(folder=f"novels/{SERIES}", key="novel_{post}_{num}")
     async def novels(self, ctx: Ctx, user: str) -> AsyncIterator[Post]:
         """The novels, newest first: the text as Markdown, the cover and the inline images."""
         async for post in self._posts(ctx, user, "novels"):
@@ -362,13 +369,15 @@ class Pixiv(Plugin):
                     stamps.append(made)
                 if kind is None:
                     yield _post(id, work, functools.partial(self._novel, ctx, id, work),
-                                date=made)
+                                date=made, **_series({"seriesId": work.get("seriesId"),
+                                                      "title": work.get("seriesTitle")}))
                 elif work.get("illustType") == kind:
                     files = (functools.partial(self._ugoira, ctx, id, made,
                                                str(work.get("title") or ""), work)
                              if kind == 2
                              else functools.partial(self._pages, ctx, id, work))
-                    yield _post(id, work, files, date=made)
+                    yield _post(id, work, files, date=made,
+                                **await reader.series(self, ctx, id, made))
             # Ids are in upload order, so once a whole batch is older than the head, so is every
             # later one.
             if stamps and _older(max(stamps), head):
@@ -854,6 +863,9 @@ class _User:
         self.lists: dict[str, list[str]] | None = None
         self.shown: dict[str, Any] | None = None
         self.cache: dict[tuple[str, tuple[str, ...]], Mapping[str, Any]] = {}
+        # The artwork series from `profile/all`, and each work's series fields as read so far.
+        self.series_list: list[_Series] = []
+        self.member: dict[str, dict[str, str]] = {}
         self.lock = asyncio.Lock()
 
     async def ids(self, owner: Pixiv, ctx: Ctx, listed: str) -> list[str]:
@@ -861,10 +873,54 @@ class _User:
         async with self.lock:
             if self.lists is None:
                 body = await owner.ajax(ctx, f"user/{self.id}/profile/all", f"user {self.id}")
-                self.lists = {name: _ids(self.id, body.get(name) if isinstance(body, dict)
-                                         else None)
+                body = body if isinstance(body, dict) else {}
+                self.lists = {name: _ids(self.id, body.get(name))
                               for name in ("illusts", "manga", "novels")}
+                found = body.get("mangaSeries")
+                self.series_list = [
+                    _Series(str(one["id"]), _series(one), _stamp(one.get("updateDate")))
+                    for one in (found if isinstance(found, list) else ())
+                    if isinstance(one, dict) and str(one.get("id") or "").isdigit()]
             return self.lists[listed]
+
+    async def series(self, owner: Pixiv, ctx: Ctx, id: str,
+                     made: int | None) -> Mapping[str, str]:
+        """An artwork's `series` and `series_id`, both empty for a work in no series.
+
+        A series' pages list its works newest first, so each is read only as far back as the
+        works asked about, once a run. A series last changed before the work was made can't
+        hold it, and isn't read.
+        """
+        work = int(id)
+        async with self.lock:
+            for one in self.series_list:
+                if made is not None and one.changed is not None and made > one.changed:
+                    continue
+                while (id not in self.member and one.page is not None
+                       and (one.floor is None or one.floor > work)):
+                    await self._read(owner, ctx, one)
+                if id in self.member:
+                    return self.member[id]
+        return NO_SERIES
+
+    async def _read(self, owner: Pixiv, ctx: Ctx, one: _Series) -> None:
+        """The next page of a series: its works join `member`; the last page ends it."""
+        body = await owner.ajax(ctx, f"series/{one.id}?p={one.page}", f"series {one.id}")
+        page = body.get("page") if isinstance(body, dict) else None
+        listed = page.get("series") if isinstance(page, dict) else None
+        if not isinstance(listed, list):
+            raise Changed(f"pxv: series {one.id} has an unknown shape",
+                          hint="pixiv's answer may have changed; report it")
+        ids = [str(item.get("workId")) for item in listed
+               if isinstance(item, dict) and str(item.get("workId") or "").isdigit()]
+        for work in ids:
+            self.member.setdefault(work, one.fields)
+        if ids:
+            least = min(int(work) for work in ids)
+            one.floor = least if one.floor is None else min(one.floor, least)
+        total = page.get("total")
+        more = ids and (not isinstance(total, int) or one.page * SERIES_PAGE < total)
+        one.page = one.page + 1 if more else None
 
     async def about(self, owner: Pixiv, ctx: Ctx) -> Mapping[str, Any]:
         """The account's own answer, `user/<id>?full=1`, asked once for the run."""
@@ -897,6 +953,27 @@ class _User:
                                   hint="pixiv's answer may have changed; report it")
                 self.cache[mark] = works
             return self.cache[mark]
+
+
+@dataclasses.dataclass
+class _Series:
+    """One artwork series of a user, read page by page: the next page (None after the last),
+    the least work id read so far, and when the series last changed (Unix seconds)."""
+
+    id: str
+    fields: dict[str, str]
+    changed: int | None
+    page: int | None = 1
+    floor: int | None = None
+
+
+def _series(found: Any) -> dict[str, str]:
+    """The `series` and `series_id` fields of a series (`seriesNavData`, a `profile/all`
+    entry), both empty when there is no series."""
+    id = str((found.get("seriesId") or found.get("id") or "") if isinstance(found, dict) else "")
+    if not id.isdigit() or id == "0":
+        return dict(NO_SERIES)
+    return {"series": str(found.get("title") or ""), "series_id": id}
 
 
 def _ids(user: str, found: Any) -> list[str]:
