@@ -4,7 +4,7 @@ import asyncio
 import datetime
 import json
 import unittest
-from urllib.parse import unquote
+from urllib.parse import parse_qs, unquote, urlsplit
 
 import no_profiles  # noqa: F401
 from plugin_kit import FakeCtx, FakePage, Reply, check, collect
@@ -160,7 +160,10 @@ class FormsTest(unittest.TestCase):
 
     def test_declarations(self):
         self.assertTrue(check(Pixiv))
-        self.assertEqual(Pixiv.categories, ("illusts", "manga", "ugoira", "novels"))
+        self.assertEqual(Pixiv.categories,
+                         ("illusts", "manga", "ugoira", "novels", "shiori", "novelshiori"))
+        self.assertEqual([one.name for one in Pixiv.user.categories if not one.own],
+                         ["shiori", "novelshiori"])
         self.assertEqual(Pixiv.domains, ("pixiv.net", "pixiv.me"))
         self.assertTrue(Pixiv.login.proves("PHPSESSID"))
         self.assertFalse(Pixiv.login.required)
@@ -966,3 +969,74 @@ class TitleNameTest(unittest.TestCase):
             self.assertEqual(flntext.filename(name), name)
         self.assertIn("![](2026-01-02_a_b_%28c%29_%5Bd%5D_50%25_5_1.png)",
                       next(one for one in found if one.path.endswith(".md")).file.content)
+
+
+def bookmark_answer(shown, hidden=()):
+    """The bookmarks answer: the `rest=show` or `rest=hide` list, cut at the offset and limit."""
+    def answer(request):
+        query = parse_qs(urlsplit(request.url).query)
+        items = list(hidden if query["rest"][0] == "hide" else shown)
+        start, size = int(query["offset"][0]), int(query["limit"][0])
+        return ok({"works": items[start:start + size], "total": len(items)})
+    return answer
+
+
+def bookmark_ctx(shown, hidden=(), novels=False, **more):
+    route = f"{AJAX}/user/{USER}/{'novels' if novels else 'illusts'}/bookmarks"
+    routes = {route: bookmark_answer(shown, hidden),
+              f"{AJAX}/user/{USER}": ok({"name": "Reader", "imageBig": None}),
+              f"{AJAX}/novel/5": ok(novel_body("text"))}
+    routes.update({f"{AJAX}/illust/{item['id']}/pages": pages(item["id"]) for item in [*shown, *hidden]
+                   if item["id"].isdigit()})
+    return FakeCtx(Pixiv, f"pxv:{USER}", routes={**routes, **more.pop("routes", {})}, **more)
+
+
+class BookmarkTest(unittest.TestCase):
+    def listing(self, ctx, category="shiori"):
+        return collect(Pixiv, f"pxv:{USER}", ctx=ctx, categories=[category])
+
+    def test_pages_are_read_by_offset_and_filed_under_the_readers_name(self):
+        shown = [work(id, day=2) for id in range(1, 51)]
+        ctx = bookmark_ctx(shown)
+        found = self.listing(ctx)
+        self.assertEqual(len(found), 50)
+        self.assertEqual((found[0].path, found[0].key),
+                         ("Reader_12345678/shiori/2026-01-02_title_1_1_p0.png", "1_0"))
+        self.assertEqual([url for url in asked(ctx) if "bookmarks" in url],
+                         [f"/user/{USER}/illusts/bookmarks?tag=&offset=0&limit=48&rest=show",
+                          f"/user/{USER}/illusts/bookmarks?tag=&offset=48&limit=48&rest=show"])
+        self.assertEqual(asked(ctx).count(f"/user/{USER}?full=1"), 1)
+
+    def test_masked_and_deleted_works_are_skipped(self):
+        shown = [work(1), work(2, isMasked=True),
+                 {"id": "0", "title": "-----", "isMasked": True, "userName": ""},
+                 work(3, kind=7)]
+        ctx = bookmark_ctx(shown)
+        self.assertEqual([one.post.id for one in self.listing(ctx)], ["1"])
+        self.assertEqual(len([text for level, text in ctx.seen.logs if level == "debug"]), 3)
+
+    def test_the_own_account_reads_the_private_bookmarks_too(self):
+        shown, hidden = [work(1)], [work(2)]
+        mine = bookmark_ctx(shown, hidden, cookies={"PHPSESSID": f"{USER}_example"})
+        self.assertEqual([one.post.id for one in self.listing(mine)], ["1", "2"])
+        self.assertEqual([url[-9:] for url in asked(mine) if "bookmarks" in url],
+                         ["rest=show", "rest=hide"])
+        other = bookmark_ctx(shown, hidden, cookies={"PHPSESSID": "87654321_example"})
+        self.assertEqual([one.post.id for one in self.listing(other)], ["1"])
+
+    def test_an_ugoira_bookmark_is_an_mp4(self):
+        ctx = bookmark_ctx([work(7, kind=2, day=2)], routes={
+            f"{AJAX}/illust/7/ugoira_meta": ugoira_meta()})
+        self.assertEqual([one.path for one in self.listing(ctx)],
+                         ["Reader_12345678/shiori/2026-01-02_title_7_7_p0.mp4",
+                          "Reader_12345678/shiori/2026-01-02_title_7_7_p0.json"])
+
+    def test_novel_bookmarks_have_their_own_folder_and_key(self):
+        item = work(5)
+        ctx = bookmark_ctx([item], novels=True)
+        found = self.listing(ctx, "novelshiori")
+        self.assertEqual([(one.path, one.key) for one in found[:2]], [
+            ("Reader_12345678/novelshiori/2026-01-02_title_5_5.md", "novel_5_0"),
+            ("Reader_12345678/novelshiori/2026-01-02_title_5_5_cover.jpg", "novel_5_1")])
+        self.assertIn(f"/user/{USER}/novels/bookmarks?tag=&offset=0&limit=24&rest=show",
+                      asked(ctx))

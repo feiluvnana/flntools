@@ -15,7 +15,7 @@ import unicodedata
 from collections.abc import AsyncIterator, Mapping, Sequence
 from pathlib import PurePosixPath
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 from flnd.plugin import (
     Blocked,
@@ -69,6 +69,8 @@ KINDS = {"illusts": (0, "illusts"), "manga": (1, "manga"), "ugoira": (2, "illust
          "novels": (None, "novels")}
 CATEGORY_OF = {0: "illusts", 1: "manga", 2: "ugoira"}
 UGOIRA = ("both", "mp4")
+# What a page of bookmarks holds: 48 artworks, 24 novels.
+BOOKMARKS = {"illusts": 48, "novels": 24}
 # What every unsupported page of pixiv says after its own reason.
 GIVE = f"; {HINT}"
 PAGES = ("ranking.php", "discovery", "request", "bookmark_new_illust.php", "stacc", "settings",
@@ -250,6 +252,19 @@ class Pixiv(Plugin):
         async for post in self._posts(ctx, user, "novels"):
             yield post
 
+    @user.category(own=False, folder="shiori", newest_first=False)
+    async def shiori(self, ctx: Ctx, user: str) -> AsyncIterator[Post]:
+        """The artworks the user bookmarked (the private ones too, on the login's own account),
+        read to the end on every run, as a bookmark carries its work's date, not its own."""
+        async for post in self._bookmarks(ctx, user, "illusts"):
+            yield post
+
+    @user.category(own=False, folder="novelshiori", key="novel_{post}_{num}", newest_first=False)
+    async def novelshiori(self, ctx: Ctx, user: str) -> AsyncIterator[Post]:
+        """The novels the user bookmarked, as `shiori` reads artworks."""
+        async for post in self._bookmarks(ctx, user, "novels"):
+            yield post
+
     def sign(self, request: Request, cookies: Mapping[str, str]) -> Request:
         """Add the web client's headers to an API request; any other is left as it is."""
         parts = urlsplit(request.url)
@@ -299,6 +314,72 @@ class Pixiv(Plugin):
             # later one.
             if stamps and _older(max(stamps), head):
                 return
+
+    async def _bookmarks(self, ctx: Ctx, user: str, kind: str) -> AsyncIterator[Post]:
+        """A user's bookmarked works of `kind`, page by page through `ctx.pages` with the offset
+        as the cursor, so a cut-short read resumes; on the login's own account, the public
+        ones then the private. The folder's name is this user's, not the artists'."""
+        if self._failed:
+            raise self._refusal()
+        name = await self._users.setdefault(user, _User(user)).name(self, ctx)
+        mine = ctx.cookies.get("PHPSESSID", "").partition("_")[0] == user
+        for rest in ("show", "hide") if mine else ("show",):
+            offset: int | None = 0
+            strikes = 0
+            while offset is not None:
+                seen = self._solves
+                await self._ready(ctx)
+                first = _bookmark_page(user, kind, rest, offset)
+                send = functools.partial(_bookmark_at, user, kind, rest)
+                async for page in ctx.pages(first, cursor=_after, send=send,
+                                            in_page=self._in_page):
+                    if _challenged(page):
+                        # Solve, then read again from this page; the second time the check
+                        # comes back, read from the tab; the third time, give up.
+                        offset = _offset(page.url)
+                        if strikes == 0:
+                            await self._solve(ctx, seen)
+                        elif strikes == 1 and not self._in_page:
+                            self._in_page = True
+                        else:
+                            self._failed = True
+                            raise self._refusal()
+                        strikes += 1
+                        break
+                    strikes = 0
+                    body = _answer(page, f"user {user}'s bookmarks", "PHPSESSID" in ctx.cookies)
+                    works = body.get("works") if isinstance(body, dict) else None
+                    if not isinstance(works, list):
+                        raise Changed(f"pxv: user {user}'s bookmarks have an unknown shape",
+                                      hint="pixiv's answer may have changed; report it")
+                    for work in works:
+                        post = self._bookmark(ctx, work, kind, name)
+                        if post is not None:
+                            yield post
+                    if _after(page) is not None:
+                        await self._ready(ctx)
+                else:
+                    offset = None
+
+    def _bookmark(self, ctx: Ctx, work: Any, kind: str, name: str) -> Post | None:
+        """One bookmarked work as a post; None for a deleted or masked one, or a type this
+        category doesn't hold, with a debug line."""
+        id = str(work.get("id") or "") if isinstance(work, dict) else ""
+        if not id.isdigit() or id == "0" or work.get("isMasked") or not work.get("title"):
+            ctx.log("debug", "pxv: a bookmark ({id}) is masked or deleted; skipped", id=id)
+            return None
+        made = _stamp(work.get("createDate"))
+        title = str(work["title"])
+        if kind == "novels":
+            return _post(id, work, functools.partial(self._novel, ctx, id, work), date=made,
+                         name=name)
+        illust = work.get("illustType")
+        if illust not in CATEGORY_OF:
+            ctx.log("debug", "pxv: bookmark {id} is of an unknown type; skipped", id=id)
+            return None
+        files = (functools.partial(self._ugoira, ctx, id, made, title, work) if illust == 2
+                 else functools.partial(self._pages, ctx, id, work))
+        return _post(id, work, files, date=made, name=name)
 
     async def _pages(self, ctx: Ctx, id: str, work: Mapping[str, Any] | None = None) -> list[File]:
         """One work's image files, one request; a masked work is `Hidden`."""
@@ -638,14 +719,47 @@ def _older(newest: int, head: Mapping[str, Any] | None) -> bool:
     return False
 
 
+def _bookmark_page(user: str, kind: str, rest: str, offset: int) -> Request:
+    """The request for one page of a user's bookmarks, from `offset`."""
+    limit = BOOKMARKS[kind]
+    path = "illusts/bookmarks" if kind == "illusts" else "novels/bookmarks"
+    return Request(f"{SITE}/ajax/user/{user}/{path}?tag=&offset={offset}&limit={limit}"
+                   f"&rest={rest}", check=False)
+
+
+def _bookmark_at(user: str, kind: str, rest: str, at: str) -> Request:
+    """`_bookmark_page` for the cursor `ctx.pages` hands back."""
+    return _bookmark_page(user, kind, rest, int(at))
+
+
+def _offset(url: str) -> int:
+    """The `offset` of a bookmarks page's URL."""
+    try:
+        return int(parse_qs(urlsplit(url).query)["offset"][0])
+    except (KeyError, IndexError, ValueError):
+        return 0
+
+
+def _after(response: Response) -> str | None:
+    """The offset of the page after a bookmarks page; None at the last one."""
+    query = parse_qs(urlsplit(response.url).query)
+    try:
+        here, size = int(query["offset"][0]), int(query["limit"][0])
+        total = response.json["body"]["total"]
+    except (KeyError, IndexError, ValueError, TypeError, Changed):
+        return None
+    return str(here + size) if isinstance(total, int) and here + size < total else None
+
+
 def _post(id: str, work: Mapping[str, Any], files: Any, *, date: int | None = None,
-          **more: Any) -> Post:
-    """A work as a post, its images downloaded with pixiv's Referer."""
+          name: str | None = None, **more: Any) -> Post:
+    """A work as a post, its images downloaded with pixiv's Referer. `name` is the folder's
+    account when it isn't the work's artist (bookmarks)."""
     if date is None:
         date = _stamp(work.get("createDate"))
     user = str(work.get("userName") or "")
     return Post(id, files, date=date, headers=REFERER, title=str(work.get("title") or ""),
-                user=user, name=user, **more)
+                user=user, name=user if name is None else name, **more)
 
 
 class _User:
@@ -655,6 +769,7 @@ class _User:
     def __init__(self, id: str) -> None:
         self.id = id
         self.lists: dict[str, list[str]] | None = None
+        self.shown: dict[str, Any] | None = None
         self.cache: dict[tuple[str, tuple[str, ...]], Mapping[str, Any]] = {}
         self.lock = asyncio.Lock()
 
@@ -667,6 +782,14 @@ class _User:
                                          else None)
                               for name in ("illusts", "manga", "novels")}
             return self.lists[listed]
+
+    async def name(self, owner: Pixiv, ctx: Ctx) -> str:
+        """The account's own display name, asked once for the run; "" when it has none."""
+        async with self.lock:
+            if self.shown is None:
+                body = await owner.ajax(ctx, f"user/{self.id}?full=1", f"user {self.id}")
+                self.shown = body if isinstance(body, dict) else {}
+            return str(self.shown.get("name") or "")
 
     async def batch(self, owner: Pixiv, ctx: Ctx, listed: str,
                     ids: Sequence[str]) -> Mapping[str, Any]:

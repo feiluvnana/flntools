@@ -377,7 +377,7 @@ A category is one part of a target that can be got alone. Each plugin's list is 
 | `loi` | `archive photo` | none |
 | `mht` | `chapters cover` | none |
 | `smp` | `images videos` | none |
-| `pxv` | `illusts manga ugoira novels` | none |
+| `pxv` | `illusts manga ugoira novels` | `shiori novelshiori` |
 | `web` | none | none |
 
 Write the list after `|`, and quote the target, since `|` is the shell's pipe:
@@ -432,6 +432,7 @@ name):
 | `fbk` post | `posts` | `media/fbk/<owner>/posts/` |
 | `loi` post | `archive`, `photo` | `media/loi/<author>/<post> <title>/` |
 | `pxv` artwork, novel | `illusts` `manga` `ugoira`; `novels` | `media/pxv/<name>_<id>/<cat>/` |
+| `pxv` bookmark | `shiori`; `novelshiori` | `media/pxv/<name>_<id>/<cat>/` |
 
 The owner is the post's: `user.username`, `screen_name`, `uniqueId`, a Facebook vanity name else its
 id. With no owner in the data the post goes where it always did, `media/<code>/<post id>/`, with no
@@ -1224,13 +1225,25 @@ up to 32.
   newest first; `illusts` and `ugoira` share the profile's illust id list and batches. With a sync
   head (`ctx.head`), once a whole batch's newest `createDate` is strictly older than the head's
   time, no more batches are asked for, so a caught-up profile costs 2 requests; `novels` stops
-  the same way.
+  the same way. `shiori` (the artworks the user bookmarked) and `novelshiori` (the novels) are
+  opt-in and not newest first: a bookmark carries its work's date, not its own, so each is read
+  to its end on every run. `GET /ajax/user/<id>/illusts/bookmarks?tag=&offset=<n>&limit=48&
+  rest=show` (`novels/bookmarks`, `limit=24`) goes through `ctx.pages` with the offset as the
+  cursor, so a cut-short read resumes; a page is `body.works[]` (as in a batch) and
+  `body.total`. When the target is the login's own account (the number before `_` in the
+  `PHPSESSID` value is the user id), `rest=hide` is read after `rest=show`, for the private
+  bookmarks. A deleted or masked item (`isMasked`, id `0`, no title) or an unknown `illustType`
+  is skipped with a debug line. Files are those of the work's type, keyed `{post}_{num}`
+  (`novel_{post}_{num}` for novels), the same as the artist's own, so a work saved twice is
+  saved once. Each page counts against the hourly budget, and a Cloudflare check is solved as
+  for any request.
 - **Root:** `{name}_{target}`: `name` is the display name of the account that owns the target (a
   profile's user for each of its categories; a single work's owner), not the work's artist, who
   stays in `user`; `target` is the user id. An empty name gives the id alone. The name comes from
   `userName` of the works the profile lists (each is the profile user's own) or of the single
   work; the engine keeps the root the first save gave, so a rename on pixiv never moves a folder
-  (see [`root`](#root)). No request reads the name apart from the works.
+  (see [`root`](#root)). For `shiori` and `novelshiori` it is the bookmarking account's, from
+  `GET /ajax/user/<id>?full=1` (`body.name`) once a run; no other category asks for it.
 - **Folder:** `{category}`, under `media/pxv/<name>_<user id>/`. **Filename:**
   `{date}_{title:.40}_{post}_p{num}`
   (`title` is the work's own title; `p<num>` is pixiv's own page number); a novel's files set
