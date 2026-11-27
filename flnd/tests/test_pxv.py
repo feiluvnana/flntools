@@ -70,8 +70,6 @@ def fail(status, **more):
 def user_ctx(illusts=(), manga=(), works=None, **more):
     """A fake of user 12345678: the id lists, the works of each, and a pages answer for each."""
     works = works if works is not None else {}
-    # The name is kept already, so the profile asks no `/user/<id>`.
-    more.setdefault("state", {"names": {USER: "Example"}})
     table = {f"{AJAX}/user/{USER}/profile/all": profile(illusts, manga),
              f"{AJAX}/user/{USER}/profile/illusts": batch(works)}
     table.update({f"{AJAX}/illust/{id}/pages": pages(id) for id in works})
@@ -348,49 +346,31 @@ class SingleTest(unittest.TestCase):
 
 
 class NameTest(unittest.TestCase):
-    """`name`, the account's display name that folders a target, is kept as first seen."""
+    """`name`, the folder's account name, is the `userName` of the works; the engine keeps it."""
 
-    def profile_ctx(self, names=None):
-        ctx = user_ctx(illusts=(5,), works={"5": work(5, day=2)},
-                       state={"names": names} if names is not None else {},
-                       routes={f"{AJAX}/user/{USER}": ok({"name": "example_user"})})
-        return ctx
+    def profile_ctx(self, user_name="Example"):
+        return user_ctx(illusts=(5,), works={"5": work(5, day=2, userName=user_name)})
 
-    def test_a_profile_learns_its_name_once_per_run_and_keeps_it(self):
-        ctx = self.profile_ctx()
-        run(ctx, "illusts")
-        run(ctx, "manga")
-        self.assertEqual(asked(ctx).count(f"/user/{USER}"), 1)
-        self.assertEqual(dict(ctx.state["names"]), {USER: "example_user"})
-        (post,) = run(self.profile_ctx({USER: "example_user"}), "illusts")
+    def test_a_profile_takes_the_name_from_its_works_and_asks_no_user_request(self):
+        ctx = self.profile_ctx("example_user")
+        (post,) = run(ctx, "illusts")
         self.assertEqual(post.fields["name"], "example_user")
+        run(ctx, "manga")
+        self.assertEqual([url for url in asked(ctx) if url.startswith("/user/")
+                          and "/profile/" not in url], [])
+        self.assertNotIn("names", ctx.state)
 
-    def test_a_profile_and_a_single_work_land_under_the_id_and_name(self):
-        found = collect(Pixiv, f"pxv:{USER}", ctx=self.profile_ctx())
+    def test_a_profile_and_a_single_work_name_their_folder_the_same_way(self):
+        found = collect(Pixiv, f"pxv:{USER}", ctx=self.profile_ctx("example_user"))
         self.assertEqual({one.path for one in found},
                          {f"example_user_{USER}/illusts/2026-01-02_5_p0.png"})
         ctx = SingleTest().single(userName="example_user")
         (one,) = collect(Pixiv, "pxv:artwork/5", ctx=ctx)
         self.assertEqual(one.path, f"example_user_{USER}/illusts/2026-01-02_5_p0.png")
-        self.assertEqual(dict(ctx.state["names"]), {USER: "example_user"})
-
-    def test_a_stored_name_wins_and_costs_no_request(self):
-        ctx = self.profile_ctx({USER: "first"})
-        found = collect(Pixiv, f"pxv:{USER}", ctx=ctx)
-        self.assertEqual({one.path.split("/")[0] for one in found}, {f"first_{USER}"})
-        self.assertNotIn(f"/user/{USER}", asked(ctx))
-        ctx = SingleTest().single(userName="renamed")
-        ctx.state["names"] = {USER: "first"}
-        (one,) = collect(Pixiv, "pxv:artwork/5", ctx=ctx)
-        self.assertEqual(one.path.split("/")[0], f"first_{USER}")
-        self.assertEqual(dict(ctx.state["names"]), {USER: "first"})
 
     def test_no_name_gives_the_id_alone(self):
-        ctx = user_ctx(illusts=(5,), works={"5": work(5, day=2)}, state={},
-                       routes={f"{AJAX}/user/{USER}": ok({})})
-        found = collect(Pixiv, f"pxv:{USER}", ctx=ctx)
+        found = collect(Pixiv, f"pxv:{USER}", ctx=self.profile_ctx(""))
         self.assertEqual({one.path.split("/")[0] for one in found}, {USER})
-        self.assertNotIn("names", ctx.state)
 
 
 ZIP = "https://i.pximg.net/img-zip-ugoira/img/2026/01/02/03/04/05/{}_ugoira1920x1080.zip"
@@ -692,7 +672,7 @@ class CaptchaTest(unittest.TestCase):
             routes = {f"{AJAX}/user/{user}/profile/all": listing,
                       f"{AJAX}/user/{user}/profile/illusts": batch({"1": work(1)})}
             return FakeCtx(plugin, f"pxv:{user}", pages=self.tab, routes=routes,
-                           state={"names": {user: "x"}})
+)
 
         one, two = make("111"), make("222")
         opened = []
@@ -737,7 +717,6 @@ def inserted(**shown):
 
 
 def novel_ctx(text="pxv:novel/5", routes=None, **more):
-    more.setdefault("state", {"names": {USER: "Example"}})
     return FakeCtx(Pixiv, text, routes=routes or {}, **more)
 
 

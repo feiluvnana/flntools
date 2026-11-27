@@ -210,6 +210,8 @@ class Placed:
     key: str
     kind: str | None
     values: Mapping[str, Any]
+    # The root the path starts with, as rendered for this file; "" when the path has none.
+    root: str = ""
 
 
 @dataclass(frozen=True)
@@ -396,6 +398,7 @@ async def plan(run: PluginRun, target: Target, options: Options) -> AsyncIterato
     route = next(r for r in run.source.routes if r.kind == target.kind)
     categories = {c.name: c for r in run.source.routes for c in r.categories}
     taken = 0
+    db = run.settings.db
     try:
         async with contextlib.aclosing(posts(run.source, site, target, options)) as stream:
             async for post in stream:
@@ -404,9 +407,11 @@ async def plan(run: PluginRun, target: Target, options: Options) -> AsyncIterato
                 taken += 1
                 if options.query and not route.categories:
                     post = _Filed.bare(post)
+                kept = root_key(run.source, target, post.owner, options)
+                stored = await run.off(db.root, kept) if db is not None and kept else None
                 for placed in place(run.source, post, await _files(run, site, post),
                                     category=categories.get(post.category), route=route,
-                                    target=target, options=options):
+                                    target=target, options=options, stored=stored):
                     yield placed
     finally:
         if not site._idle:
@@ -429,7 +434,7 @@ async def _files(run: PluginRun, site: Ctx, post: Post) -> list[File]:
 def place(
     source: Plugin, post: Post, files: Sequence[File], *, category: Category | None = None,
     route: Route | None = None, target: Target | None = None, options: Options | None = None,
-    typed: Callable[[File], str] | None = None,
+    typed: Callable[[File], str] | None = None, stored: str | None = None,
 ) -> list[Placed]:
     """Give each file of `post` its path under the target's folder and its history key.
 
@@ -448,6 +453,8 @@ def place(
             A single post's `{target}` is its owner, else its id.
         options: the target's options, for the `{query}` field of a search's found target.
         typed: a file's `Content-Type` where known (the test kit); None for none.
+        stored: the root the target keeps (`Store.root`), used in place of rendering the
+            plugin's `root`; ignored under `--folder`.
 
     Returns:
         One `Placed` per file, in order.
@@ -461,8 +468,9 @@ def place(
     owned = _owned(source, target, options)
     root = source.root
     named = options is not None and options.folder is not None and not fallback
-    if not fallback and (owned or (root != ROOT and not named)):
-        folder = f"{root}/{folder}" if folder else root
+    rooted = fallback or owned or (root != ROOT and not named)
+    if options is not None and options.folder is not None:
+        stored = None
     filename, key = (_format(source, category, name) for name in ("filename", "key"))
     posted = day(post.date)
     placed: list[Placed] = []
@@ -475,7 +483,8 @@ def place(
         if owned and post.owner:
             values["target"] = post.owner
         name = _named(post, file, filename, values, extension)
-        where = fill(folder, values)
+        lead = (stored if stored is not None else fill(root, values)) if rooted else ""
+        where = "/".join(part for part in (lead, fill(folder, values)) if part)
         path = "/".join(part for part in (where, name) if part)
         # Files of one post may share a name (`cover.jpg`): a later one takes its number, or it
         # would be skipped as already queued.
@@ -483,13 +492,25 @@ def place(
             name = f"{PurePosixPath(name).stem}_{num}{PurePosixPath(name).suffix}"
             path = "/".join(part for part in (where, name) if part)
         used.add(path)
-        lead = fill(root, values) if fallback else ""
-        kept = "/".join(path.split("/")[len(lead.split("/")):]) if lead and "/" in path else path
+        drop = lead if fallback else ""
+        kept = "/".join(path.split("/")[len(drop.split("/")):]) if drop and "/" in path else path
         where_kept, _, file_kept = kept.rpartition("/")
         resolved_key = fill(key, {**values, "path": kept, "dir": where_kept, "file": file_kept},
                             safe=False) or kept
-        placed.append(Placed(post, file, num, path, resolved_key, kind, values))
+        placed.append(Placed(post, file, num, path, resolved_key, kind, values, lead))
     return placed
+
+
+def root_key(source: Plugin, target: Target, owner: str | None,
+             options: Options | None) -> str | None:
+    """The key a target's root is kept under (`Store.root`): the target's, or its owner's for a
+    single post, so a work and its owner's profile share a folder. None when the root is the
+    default `{target}`, or `--folder` is given: nothing is kept."""
+    if source.root == ROOT or (options is not None and options.folder is not None):
+        return None
+    if owner and _owned(source, target, options):
+        return f"{source.code}:{owner}"
+    return store.key(target)
 
 
 def _file_values(
@@ -586,6 +607,8 @@ class Ledger:
                            and not (self._route is not None and self._route.categories)
                            and any(r.categories for r in self.source.routes))
         self._later: list[tuple[Path, str, str]] = []
+        # The roots the home keeps, read once each (`_stored`).
+        self._roots: dict[str, str | None] = {}
         # The posts the `date` hook had no day for, read off the loop by `load`.
         self._asked: dict[str, float] = {}
         # The rows of files found on disk with none, written with their post's (`_held`).
@@ -672,9 +695,11 @@ class Ledger:
             self._ownerless = False
             _say(self.target, "info", "no owner found for post {post}; saved under its id",
                  post=post.id)
+        kept = root_key(self.source, self.target, post.owner, self._options)
+        stored = self._stored(kept)
         for placed in place(
             self.source, post, listed, category=category, route=self._route,
-            target=self.target, options=self._options,
+            target=self.target, options=self._options, stored=stored,
         ):
             dest = checked_dest(self.folder, placed.path, check=self._custom_folder)
             if placed.file.content is not None:
@@ -708,9 +733,20 @@ class Ledger:
             rows, self._unrecorded = self._unrecorded, []
             self._db.save(rows)
         if todo:
+            if kept and stored is None and todo[0].placed.root and self._db is not None:
+                self._db.keep_root(kept, todo[0].placed.root)
+                self._roots[kept] = todo[0].placed.root
             todo.sort(key=lambda queued: queued.placed.kind != files.VIDEO)
             return Outcome.QUEUED, todo
         return (Outcome.SAVED if found else Outcome.EMPTY), []
+
+    def _stored(self, kept: str | None) -> str | None:
+        """The root the home keeps under `kept`; None for none (read once, off the loop)."""
+        if kept is None or self._db is None:
+            return None
+        if kept not in self._roots:
+            self._roots[kept] = self._db.root(kept)
+        return self._roots[kept]
 
     def _skip_held(self, post: Post, name: str, dest: Path, item_key: str, held: str) -> None:
         """Count a skipped file and link it when held in another category's folder."""
@@ -1379,14 +1415,16 @@ async def download(run: PluginRun, target: Target, tally: Tally, options: Option
     started = time.monotonic()
     # No lock on the target: the home's one run owns every part. The sweep runs while the
     # listing starts, and ends before the first file is handed over.
-    sweep_dir = _sweep_folder(run.settings.home, run.source, target, options)
+    kept = root_key(run.source, target, None, options)
+    db = run.settings.db
+    stored = await run.off(db.root, kept) if db is not None and kept else None
+    sweep_dir = _sweep_folder(run.settings.home, run.source, target, options, stored)
     sweeping = (asyncio.ensure_future(run.off(files.sweep, sweep_dir))
                 if sweep_dir is not None else None)
     site = _site(run, target, options.since, options.until, again=options.again)
     ledger = Ledger(run, site, target, tally, options=options)
     downloads = Downloads(run, target, tally, swept=sweeping, site=site, ledger=ledger)
     work = _Work(ledger, downloads)
-    db = run.settings.db
     row = await run.off(_opened, ledger, db, target)
     progress = _Progress(row, again=options.again)
     error = await _execute_listing(work, run, site, target, options, progress, listed, turn)
@@ -2482,10 +2520,14 @@ def checked_dest(root: Path, relative: str, *, check: bool = False) -> Path:
     return dest
 
 
-def _sweep_folder(home: Path, source: Plugin, target: Target, options: Options) -> Path | None:
-    """The folder whose stale parts `download` sweeps; None skips sweeping the plugin root."""
+def _sweep_folder(home: Path, source: Plugin, target: Target, options: Options,
+                  stored: str | None = None) -> Path | None:
+    """The folder whose stale parts `download` sweeps; None skips sweeping the plugin root.
+    `stored` is the root the target keeps, which is the folder when there is one."""
     if options.folder is None and source.root == ROOT:
         return store.target_folder(home, target)
+    if options.folder is None and stored:
+        return checked_dest(home / store.MEDIA / target.plugin, stored, check=True)
     if options.folder is None:
         # The root's own literal start; a root of post fields has none, and nothing is swept.
         templates = [source.root]
@@ -2534,7 +2576,8 @@ def _folder_format(
 ) -> str:
     """The folder template a file is placed by: the call's `options.folder` if it names the
     category (or `*`), else the config's entry for it, its category's, its route's, its
-    source's. A category the call's value leaves out keeps that default place under `{target}`.
+    source's. A category the call's value leaves out keeps that default place, which `place`
+    puts under the root.
 
     Args:
         source: the file's source.
@@ -2551,10 +2594,7 @@ def _folder_format(
         found = table.get(name, table.get(config.ANY))
         if found is not None:
             return found
-    own = _plugin_folder(source, route, category)
-    if options is not None and options.folder is not None:
-        return f"{source.root}/{own}" if own else source.root
-    return own
+    return _plugin_folder(source, route, category)
 
 
 def _plugin_folder(source: Plugin, route: Route | None, category: Category | None) -> str:

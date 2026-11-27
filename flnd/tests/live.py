@@ -166,10 +166,11 @@ def _capture_placed(*, ask: bool = True) -> Iterator[list[_Recorded]]:
 
     def wrapped(
         source: Any, post: Any, files: Any, *, category: Any = None, route: Any = None,
-        target: Any = None, options: Any = None,
+        target: Any = None, options: Any = None, **more: Any,
     ) -> list[crawl.Placed]:
         result = original(
             source, post, files, category=category, route=route, target=target, options=options,
+            **more,
         )
         folder = crawl._folder_format(source, route, category)
         filename = crawl._format(source, category, "filename")

@@ -19,6 +19,7 @@ from test_ctx import CtxCase as RunCase
 from test_ctx import FakeRaw
 
 from flnd.engine import jobs
+from flnd.engine import store as _store
 from flnd.engine.crawl import Options
 from flnd.engine.events import Planned
 from flnd.errors import Blocked
@@ -1150,8 +1151,9 @@ class Rooted(Plugin):
     root = "{target}_{name}"
     filename = "{post}_{num}"
     fields = ("name",)
-    # Set by each test: the name the posts carry.
+    # Set by each test: the name the posts carry, and the id of the profile's post.
     given = "Example"
+    ident = "p1"
 
     @route("rooted.example/p/{id:\\w+}", single=True)
     async def post(self, ctx, id):
@@ -1164,13 +1166,13 @@ class Rooted(Plugin):
 
     @user.category
     async def posts(self, ctx, profile):
-        yield Post("p1", [File(f"{CDN_URL}/p1.jpg")], name=self.given)
+        yield Post(self.ident, [File(f"{CDN_URL}/p1.jpg")], name=self.given)
 
 
 class RootTest(EngineCase):
-    def saved(self, target, given="Example", **options):
+    def saved(self, target, given="Example", ident="p1", **options):
         self.routes[f"{CDN_URL}/p1.jpg"] = _net.reply(200, content=JPEG)
-        with mock.patch.object(Rooted, "given", given):
+        with mock.patch.object(Rooted, "given", given), mock.patch.object(Rooted, "ident", ident):
             self.run_engine(Rooted, targets=[target], options=Options(**options))
         folder = self.home / "media" / "exr"
         return sorted(path.relative_to(folder).as_posix() for path in folder.rglob("*")
@@ -1193,6 +1195,31 @@ class RootTest(EngineCase):
         shutil.rmtree(self.home)
         self.assertEqual(self.saved("exr:example_user", folder="reels:x"),
                          ["example_user_Example/posts/p1_0.jpg"])
+
+    def test_the_stored_root_wins_after_the_name_changes(self):
+        self.saved("exr:example_user", "Example")
+        self.assertEqual(self.saved("exr:example_user", "Renamed", "p2"),
+                         ["example_user_Example/posts/p1_0.jpg",
+                          "example_user_Example/posts/p2_0.jpg"])
+        with _store.open(self.home) as db:
+            self.assertEqual(db.root("exr:example_user"), "example_user_Example")
+
+    def test_a_single_post_and_its_profile_share_a_folder_whichever_came_first(self):
+        both = ["example_user_Example/posts/p1_0.jpg", "example_user_Example/posts/p2_0.jpg"]
+        for first, second in [("https://rooted.example/p/p1", "exr:example_user"),
+                              ("exr:example_user", "https://rooted.example/p/p2")]:
+            with self.subTest(first=first):
+                self.saved(first, "Example")
+                self.assertEqual(self.saved(second, "Other", "p2"), both)
+                shutil.rmtree(self.home)
+
+    def test_folder_ignores_the_stored_root(self):
+        self.saved("exr:example_user", "Example")
+        self.assertEqual(self.saved("exr:example_user", "Renamed", "p2", folder="posts:x"),
+                         ["example_user_Example/posts/p1_0.jpg", "x/p2_0.jpg"])
+        self.assertEqual(self.saved("exr:example_user", "Renamed", "p3", folder="reels:x"),
+                         ["example_user_Example/posts/p1_0.jpg",
+                          "example_user_Renamed/posts/p3_0.jpg", "x/p2_0.jpg"])
 
     def test_a_root_of_post_fields_sweeps_nothing(self):
         from flnd.engine import crawl

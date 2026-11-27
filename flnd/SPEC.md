@@ -459,7 +459,17 @@ else its id. `root = "{target}_{name}"` files `example_user`'s posts, with the p
 no `config.toml` key. `--folder` replaces `root` and `folder` both, for the categories it names; a
 category it leaves out keeps its default place, under `root`. A single post's `--folder` templates
 are under its owner's folder, as above. With a root of post fields, a run sweeps no stale parts of
-a target's folder, as with a `--folder` of fields.
+a target's folder, as with a `--folder` of fields unless the target already keeps its root.
+
+**A root is kept.** The first time a target with a non-default `root` has a file queued, the engine
+stores the root as rendered for that file, in `state` under the plugin name `""` (no plugin has
+it, so no `ctx.state` key can clash) and the key `root:<code>:<target value>`. Every later file of
+the target uses the stored text and renders `root` no more, so an account renamed on the site
+never splits across two folders. A single post is kept under its owner's key
+(`root:<code>:<owner>`), so a work and its owner's profile share one folder, whichever came
+first; a post with no owner is kept under its own target. `--dry` and the sweep of stale
+parts read the stored root too. A `--folder` run neither reads nor writes it, and a plugin whose
+`root` is the default `{target}` stores nothing. Files saved before a root was stored never move.
 
 ### `--folder`
 
@@ -1213,10 +1223,10 @@ up to 32.
   the same way.
 - **Root:** `{name}_{target}`: `name` is the display name of the account that owns the target (a
   profile's user for each of its categories; a single work's owner), not the work's artist, who
-  stays in `user`; `target` is the user id. An empty name gives the id alone. The name is kept
-  as first seen, in the plugin's state (`names`, user id to name), so a rename on pixiv never
-  moves a folder. A profile reads it once per run, with `GET /ajax/user/<id>` (`body.name`),
-  only when none is kept; a single work uses its own `userName`.
+  stays in `user`; `target` is the user id. An empty name gives the id alone. The name comes from
+  `userName` of the works the profile lists (each is the profile user's own) or of the single
+  work; the engine keeps the root the first save gave, so a rename on pixiv never moves a folder
+  (see [`root`](#root)). No request reads the name apart from the works.
 - **Folder:** `{category}`, under `media/pxv/<name>_<user id>/`. **Filename:**
   `{date}_{post}_p{num}`
   (`p<num>` is pixiv's own page number); a novel's files set their own names (see Novels).

@@ -99,6 +99,8 @@ CHECKPOINT_ROWS = 1_000
 
 SAVED, GONE, LINK = "saved", "gone", "link"
 RETRIES = 3
+# The `state` plugin column of the engine's own values, and the key prefix of a kept root.
+ENGINE, ROOT = "", "root:"
 ON_DISK = "state IN ('saved', 'link')"
 # SQLite takes up to 32,766 values in one statement; 500 rows of 16 is 8,000.
 ONE_STATEMENT = 500
@@ -772,6 +774,21 @@ class Store:
                         _json(row.heads), row.folder))
 
     # -- plugins' state ---------------------------------------------------------------------
+
+    def root(self, target: str) -> str | None:
+        """The folder name a target keeps, `key` of its first saved file's root; None for none.
+
+        It lives in `state` under the plugin name "", which no plugin has, so no `ctx.state`
+        key can clash with it.
+        """
+        found = self._db.one("SELECT value FROM state WHERE plugin = ? AND key = ?",
+                             (ENGINE, ROOT + target))
+        return msgspec.json.decode(found[0]) if found else None
+
+    def keep_root(self, target: str, root: str) -> None:
+        """Keep `root` as a target's folder name, unless it has one already."""
+        self._db.write("INSERT OR IGNORE INTO state VALUES (?, ?, ?)",
+                       (ENGINE, ROOT + target, _json(root)))
 
     def state(self, plugin: str) -> State:
         """A plugin's own values between runs, as a mapping."""
