@@ -1,4 +1,4 @@
-"""Media: one ffmpeg join of a video stream and its audio stream into one file.
+"""Media: one ffmpeg join of a video and its audio, or one video made of timed frames.
 
 SPEC.md#for-developers says where it sits in a transfer.
 """
@@ -7,12 +7,19 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
+from collections.abc import Sequence
+from pathlib import Path
 
 from flnkit import files
+from flnkit.errors import Changed
 
 _log = logging.getLogger(__name__)
 
-__all__ = ["join"]
+__all__ = ["FRAME", "animate", "check_frames", "ffconcat", "join"]
+
+# The only frame names taken: six digits and an image extension, so no path and no option.
+FRAME = re.compile(r"\d{6}\.(jpe?g|png|gif)")
 
 
 async def join(video: files.Part, audio: files.Part, out: files.Part,
@@ -59,3 +66,56 @@ def _audio_only(said: str, video: files.Part, audio: files.Part) -> bool:
     if "in#0" in said or str(video.path) in said:
         return False
     return "in#1" in said or str(audio.path) in said or "Invalid data found" in said
+
+
+def check_frames(names: Sequence[str], delays: Sequence[tuple[str, int]]) -> None:
+    """Check that `names` (a zip's entries) are frame names and are exactly `delays`' names.
+
+    Raises:
+        Changed: a name isn't `FRAME`, or the two sets of names differ.
+    """
+    for name in (*names, *(one for one, _ in delays)):
+        if not FRAME.fullmatch(name):
+            raise Changed(f"the frames zip holds {name!r}, not a numbered frame")
+    if len(set(names)) != len(names) or set(names) != {name for name, _ in delays}:
+        raise Changed("the frames zip doesn't hold the frames its delay list names")
+
+
+def ffconcat(delays: Sequence[tuple[str, int]]) -> str:
+    """The ffconcat list for `delays`, durations in seconds.
+
+    The last frame is listed once more, without a duration, or ffmpeg drops its duration.
+
+    Raises:
+        Changed: a name isn't `FRAME`.
+    """
+    lines = ["ffconcat version 1.0"]
+    for name, milliseconds in delays:
+        if not FRAME.fullmatch(name):
+            raise Changed(f"the frames zip holds {name!r}, not a numbered frame")
+        lines += [f"file {name}", f"duration {milliseconds / 1000:.3f}"]
+    lines.append(f"file {delays[-1][0]}")
+    return "\n".join(lines) + "\n"
+
+
+async def animate(frames_dir: Path, delays: Sequence[tuple[str, int]], out: files.Part,
+                  ffmpeg: files.Tool) -> None:
+    """Make an H.264 MP4 from the frames in `frames_dir`, each shown for its delay.
+
+    Args:
+        frames_dir: a folder holding the frames `delays` names.
+        delays: (frame file name, milliseconds) in play order.
+        out: the part to write the MP4 to.
+        ffmpeg: the ffmpeg tool, looked up by the caller.
+
+    Raises:
+        Changed: a frame name isn't `FRAME`.
+        RunError: ffmpeg failed.
+    """
+    listing = frames_dir / "frames.ffconcat"
+    await asyncio.to_thread(listing.write_text, ffconcat(delays), encoding="utf-8")
+    await asyncio.to_thread(
+        ffmpeg.run, "-y", "-f", "concat", "-safe", "0", "-i", str(listing),
+        "-c:v", "libx264", "-crf", "18", "-pix_fmt", "yuv420p",
+        "-vf", "pad=ceil(iw/2)*2:ceil(ih/2)*2", "-movflags", "+faststart", "-f", "mp4",
+        str(out.path))

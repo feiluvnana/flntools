@@ -19,6 +19,7 @@ import threading
 import time
 import unittest
 import zipfile
+import zlib
 from datetime import UTC, date, datetime
 from pathlib import Path
 from unittest import mock
@@ -29,10 +30,10 @@ from flnd.engine import jobs, store
 from flnd.engine.events import Failed, Saved
 from flnd.engine.jobs import Kind
 from flnd.engine.save import Item, Saver
-from flnd.errors import DiskError, NotFound
+from flnd.errors import Changed, DiskError, NotFound
 from flnd.plugin import File, Target
 from flnd.ui.log import ui
-from flnkit import clock, files, net
+from flnkit import clock, files, media, net
 
 T = Target("ins:example_user", kind="user")
 CDN = "https://cdn.example.com"
@@ -255,6 +256,113 @@ class DashTest(SaveCase):
                 self.assertEqual(on_loop, [], "no part opens on the loop's thread")
                 self.assertEqual(sorted(os.listdir(self.tmp / "media"))[-1], name)
         self.assertEqual([type(event) for event in self.events], [Saved] * 3)
+
+
+def _png(width: int, height: int, shade: int) -> bytes:
+    """A tiny grey PNG, made by hand so no imaging library is needed."""
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        body = kind + data
+        return (len(data).to_bytes(4, "big") + body
+                + zlib.crc32(body).to_bytes(4, "big"))
+    rows = b"".join(b"\0" + bytes([shade]) * width for _ in range(height))
+    header = width.to_bytes(4, "big") + height.to_bytes(4, "big") + bytes([8, 0, 0, 0, 0])
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", header)
+            + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b""))
+
+
+def _frames_zip(names: list[str], size: tuple[int, int] = (3, 3)) -> bytes:
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w") as archive:
+        for number, name in enumerate(names):
+            archive.writestr(name, _png(*size, number * 80))
+    return out.getvalue()
+
+
+DELAYS = [("000000.png", 80), ("000001.png", 120), ("000002.png", 40)]
+ZIP = f"{CDN}/u.zip"
+
+
+class FramesTest(SaveCase):
+    def frames(self, body: bytes, name="u.mp4", *, keep=False, delays=DELAYS, ffmpeg=None):
+        self.routes[ZIP] = body
+        ran: list = []
+
+        def fake(argv):
+            ran.append(argv)
+            Path(argv[-1]).write_bytes(b"video")
+            return 0, "", ""
+
+        with files.fake({"ffmpeg": ffmpeg or fake}):
+            self.save(self.item(name, file=File.frames(ZIP, delays, keep=keep), kind=None))
+        return ran
+
+    def test_the_ffconcat_list_has_seconds_and_repeats_the_last_frame(self) -> None:
+        self.assertEqual(media.ffconcat(DELAYS), "\n".join([
+            "ffconcat version 1.0", "file 000000.png", "duration 0.080", "file 000001.png",
+            "duration 0.120", "file 000002.png", "duration 0.040", "file 000002.png", ""]))
+
+    def test_only_numbered_frame_names_are_taken(self) -> None:
+        for name in ("../x.jpg", "a.jpg", "000000.bmp", "dir/000000.jpg", "00000.jpg",
+                     "000000.jpg\nfile x"):
+            with self.subTest(name), self.assertRaises(Changed):
+                media.ffconcat([(name, 10)])
+            with self.subTest(zip=name), self.assertRaises(Changed):
+                media.check_frames([name], [("000000.jpg", 10)])
+
+    def test_a_zip_that_does_not_match_its_delays_fails_the_file(self) -> None:
+        cases = [("a missing frame", ["000000.png", "000001.png"]),
+                 ("an extra frame", ["000000.png", "000001.png", "000002.png", "000003.png"]),
+                 ("a bad name", ["000000.png", "000001.png", "../000002.png"])]
+        for label, names in cases:
+            with self.subTest(label):
+                ran = self.frames(_frames_zip(names))
+                self.assertEqual(ran, [])
+                self.assertEqual(self.saved(), [])
+                failed = [event for event in self.events if isinstance(event, Failed)]
+                self.assertIsInstance(failed[-1].error, Changed)
+                self.assertNotIn("\n", str(failed[-1].error))
+        media_dir = self.tmp / "media"
+        self.assertEqual([one.name for one in media_dir.iterdir() if one.suffix != ".part"
+                          and not one.name.startswith(".")], [])
+
+    def test_the_zip_becomes_one_mp4_by_an_argument_list(self) -> None:
+        ran = self.frames(_frames_zip([name for name, _ in DELAYS]))
+        self.assertEqual((self.tmp / "media" / "u.mp4").read_bytes(), b"video")
+        self.assertEqual(sorted(one.name for one in (self.tmp / "media").iterdir()), ["u.mp4"])
+        argv = ran[0]
+        self.assertEqual(argv[argv.index("-f") + 1], "concat")
+        self.assertEqual(list(argv[-3:-1]), ["-f", "mp4"])
+        self.assertIn("pad=ceil(iw/2)*2:ceil(ih/2)*2", argv)
+        self.assertIn(Kind.MERGE, self.jobs.kinds)
+        self.assertEqual(self.rows("key, path"), [("ins:u.mp4", str(self.tmp / "media/u.mp4"))])
+        self.assertEqual(self.rows("extracted"), [(None,)])
+
+    def test_keep_leaves_an_unextracted_zip_beside_the_video_and_in_its_row(self) -> None:
+        body = _frames_zip([name for name, _ in DELAYS])
+        self.frames(body, keep=True)
+        media_dir = self.tmp / "media"
+        self.assertEqual(sorted(one.name for one in media_dir.iterdir()), ["u.mp4", "u.zip"])
+        self.assertEqual((media_dir / "u.zip").read_bytes(), body)
+        self.assertEqual(self.rows("path, unpacked, extracted"),
+                         [(str(media_dir / "u.mp4"), "",
+                           json.dumps([str(media_dir / "u.zip")]))])
+        self.assertEqual(len(self.saved()), 1)
+
+    def test_a_missing_ffmpeg_is_a_tool_error(self) -> None:
+        self.routes[ZIP] = _frames_zip([name for name, _ in DELAYS])
+        with files.fake({}), self.assertRaises(files.MissingError):
+            self.save(self.item("u.mp4", file=File.frames(ZIP, DELAYS), kind=None))
+
+    @unittest.skipUnless(shutil.which("ffmpeg"), "ffmpeg isn't installed")
+    def test_a_real_ffmpeg_makes_a_playable_video_of_odd_sized_frames(self) -> None:
+        self.routes[ZIP] = _frames_zip([name for name, _ in DELAYS], size=(5, 3))
+        self.save(self.item("u.mp4", file=File.frames(ZIP, DELAYS, keep=True), kind=None))
+        out = self.tmp / "media" / "u.mp4"
+        self.assertEqual(out.read_bytes()[4:8], b"ftyp")
+        self.assertTrue((self.tmp / "media" / "u.zip").exists())
+        probe = files.find("ffprobe").run("-v", "error", "-show_entries", "stream=width,height",
+                                           "-of", "csv=p=0", str(out)).out.strip()
+        self.assertEqual(probe, "6,4")
 
 
 class SegmentTest(SaveCase):

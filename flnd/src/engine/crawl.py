@@ -2391,7 +2391,7 @@ def planned(file: File, content_type: str = "") -> tuple[str, str | None]:
     A name with its own extension keeps it, its content checked as it lands (`_extension`'s
     kinds). A stem takes `save.stem_extension`'s: `content_type`'s, else its URL's media
     extension, else none; it is named again as it lands (`save.STEM`), by the answer's
-    `Content-Type`, then by its bytes. A DASH pair and a stream are videos.
+    `Content-Type`, then by its bytes. A DASH pair, a stream and a frames zip are videos.
 
     Args:
         file: the file.
@@ -2399,6 +2399,8 @@ def planned(file: File, content_type: str = "") -> tuple[str, str | None]:
     """
     if file.content is not None:
         return PurePosixPath(file.name or "").suffix, None
+    if file.delays is not None:
+        return DASH_EXTENSION, files.VIDEO
     own = own_extension(file.name)
     if own:
         return own, files.kind_of(file.name or "")

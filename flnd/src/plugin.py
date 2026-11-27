@@ -69,7 +69,7 @@ RESERVED = frozenset(TEMPLATE_FIELDS) | {"id", "files", "headers", "listed", "pi
 # The ways a cookie site's login is read: a cookies.txt file, given by its path.
 COOKIE_METHODS = ("file",)
 # What a `File` slot holds when it isn't given; None for the rest.
-FILE_DEFAULTS = {"mirrors": (), "ranged": False}
+FILE_DEFAULTS = {"mirrors": (), "ranged": False, "keep": False}
 _FORMATTER = string.Formatter()
 
 T = TypeVar("T")
@@ -351,6 +351,7 @@ class File:
     """One file of a post: a URL, mirror URLs, or a fetch function, and how to save it.
 
     `File.text` and `File.stream` make the two files that have none of the three.
+    `File.frames` makes a URL file the engine turns into a video.
 
     Args:
         url: its URL.
@@ -388,6 +389,9 @@ class File:
     # A segmented stream's playlist URL, and the headers its segments are fetched with.
     playlist: str | None
     headers: Mapping[str, str] | None
+    # A zip of frames' (file name, milliseconds) pairs in play order, and whether the zip stays.
+    delays: tuple[tuple[str, int], ...] | None
+    keep: bool
 
     def __init__(self, url: str | None = None, *, mirrors: Sequence[str] = (),
                  fetch: Fetch | None = None, audio: str | None = None, name: str | None = None,
@@ -475,6 +479,37 @@ class File:
             raise PluginError(f"File.stream takes a playlist's URL, not {playlist!r}")
         made = cls.__new__(cls)
         made._fill(playlist=playlist, headers=_frozen(headers))
+        return made
+
+    @classmethod
+    def frames(cls, url: str, delays: Sequence[tuple[str, int]], *, keep: bool = False) -> File:
+        """A zip of numbered frames, saved as one MP4 that the engine's ffmpeg makes.
+
+        Args:
+            url: the zip's URL.
+            delays: (frame file name, milliseconds) in play order, each name in the zip.
+            keep: also keep the zip, never extracted, beside the video as `<name>.zip`.
+
+        Raises:
+            PluginError: `url` isn't an http or https URL, `delays` is empty, or a pair isn't
+                a name and a positive whole number of milliseconds.
+        """
+        if not isinstance(url, str) or not url.lower().startswith(("http://", "https://")):
+            raise PluginError(f"File.frames takes the zip's URL, not {url!r}")
+        pairs = []
+        for pair in delays if not isinstance(delays, str) else ():
+            if not (isinstance(pair, (tuple, list)) and len(pair) == 2
+                    and isinstance(pair[0], str)):
+                raise PluginError(f"File.frames takes (name, milliseconds) pairs, not {pair!r}")
+            wait = pair[1]
+            if not isinstance(wait, int) or isinstance(wait, bool) or wait <= 0:
+                raise PluginError(f"File.frames: a delay is a positive whole number of "
+                                  f"milliseconds, not {wait!r}")
+            pairs.append((pair[0], wait))
+        if not pairs:
+            raise PluginError("File.frames needs at least one (name, milliseconds) pair")
+        made = cls.__new__(cls)
+        made._fill(url=url, delays=tuple(pairs), keep=bool(keep))
         return made
 
 

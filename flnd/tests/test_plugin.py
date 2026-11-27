@@ -401,6 +401,28 @@ class TypesTest(unittest.TestCase):
         self.assertEqual(note, File.text("info.md", "# Title\n"))
         self.assertIn("info.md", repr(note))
 
+    def test_frames_files(self):
+        url = "https://cdn.example.com/u.zip"
+        made = File.frames(url, [("000000.jpg", 80), ["000001.jpg", 120]], keep=True)
+        self.assertEqual((made.url, made.delays, made.keep),
+                         (url, (("000000.jpg", 80), ("000001.jpg", 120)), True))
+        self.assertFalse(File.frames(url, [("000000.jpg", 80)]).keep)
+        rows = [
+            ("u.zip", [("000000.jpg", 80)], r"the zip's URL"),
+            (url, [], r"at least one"),
+            (url, "000000.jpg", r"at least one"),
+            (url, [("000000.jpg", 0)], r"positive whole number"),
+            (url, [("000000.jpg", -5)], r"positive whole number"),
+            (url, [("000000.jpg", 8.5)], r"positive whole number"),
+            (url, [("000000.jpg", True)], r"positive whole number"),
+            (url, [("000000.jpg",)], r"pairs"),
+            (url, [(1, 80)], r"pairs"),
+        ]
+        for link, delays, message in rows:
+            with self.subTest(link=link, delays=delays), \
+                    self.assertRaisesRegex(PluginError, message):
+                File.frames(link, delays)
+
     def test_dash(self):
         def representation(mime, url, *, height=0, bandwidth=1000):
             return (f'<Representation mimeType="{mime}" height="{height}" '

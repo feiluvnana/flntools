@@ -14,6 +14,7 @@ import re
 import shutil
 import sys
 import threading
+import zipfile
 from collections import deque
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager, suppress
@@ -26,6 +27,7 @@ from flnd.engine import config, jobs, store
 from flnd.engine.events import Failed, Saved, sink
 from flnd.engine.jobs import Job, Kind
 from flnd.errors import (
+    Changed,
     DiskError,
     Error,
     NetworkError,
@@ -111,6 +113,8 @@ class _Landed:
     path: Path
     day: datetime.date | None
     row: store.FileRow
+    # A `File.frames(keep=True)` zip beside the video, listed in the row once committed.
+    kept: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -384,6 +388,8 @@ class _Flow:
     """One file's place in the run's counts: whether its transfer started."""
 
     started: bool = False
+    # Where a `File.frames(keep=True)` zip landed, for its row.
+    kept: Path | None = None
 
 
 class _Bytes:
@@ -600,12 +606,14 @@ class Saver:
             post_id=item.post, category=item.category,
             date=dated.isoformat() if dated else None, estimated=still_estimated,
             kind=files.kind_of(saved.path.name), at=store.now(), files=item.count)
-        return _Landed(item, saved.path, dated, row)
+        return _Landed(item, saved.path, dated, row, flow.kept)
 
     async def _transfer(self, item: Item, file: File, client: net.Client, plugin: str,
                         received: dict[str, str], flow: _Flow) -> files.Saved:
         """Fill the file's part from its mirrors in order, check it and land it."""
         mirrors = _sources(file)
+        if file.delays is not None:
+            return await self._frames(item, file, client, plugin, flow)
         if file.audio is not None and isinstance(mirrors[0], str):
             try:
                 return await self._dash(item, mirrors[0], file.audio, client, plugin, flow)
@@ -914,6 +922,56 @@ class Saver:
         assert held.saved is not None
         return held.saved
 
+    async def _frames(self, item: Item, file: File, client: net.Client, plugin: str,
+                      flow: _Flow) -> files.Saved:
+        """A zip of frames as a `FILE` job into its part, then one `MERGE` job that unzips it
+        into a scratch folder and has ffmpeg make the file's part from it.
+
+        With `keep`, the zip lands beside the video as `<name>.zip`, and `flow.kept` has it
+        for the row; else it goes once joined, or given up on.
+        """
+        ffmpeg = files.ffmpeg()
+        delays = file.delays
+        assert delays is not None and file.url is not None
+        self._start(item, flow)
+        async with self._part(item.dest) as held:
+            if item.day is not None:
+                held.mtime = noon(item.day)
+            zip_dest = held.dest.with_suffix(".zip") if file.keep else \
+                held.dest.with_name(f"{held.dest.name}.zip")
+            scratch = held.dest.with_name(f".{held.dest.name}.frames")
+            async with self._part(zip_dest) as archive:
+                await self._stream(item, plugin, file.url, archive, client)
+                await self._call(archive.flush)
+                if self.stop is not None and self.stop.is_set():
+                    raise KeyboardInterrupt
+
+                async def make() -> None:
+                    try:
+                        await self._call(_unzip, archive.path, scratch, delays)
+                        await media.animate(scratch, delays, held, ffmpeg)
+                    except files.RunError as error:
+                        error.retryable = True
+                        raise
+
+                try:
+                    await self.scheduler.run(Job(kind=Kind.MERGE, work=make, plugin=plugin,
+                                                 target=str(item.target)))
+                except BaseException:
+                    # The part holds ffmpeg's output now, not bytes a download goes on from.
+                    held.drop()
+                    archive.drop()
+                    raise
+                finally:
+                    await self._call(shutil.rmtree, scratch, True)
+                if not file.keep:
+                    archive.drop()
+            if file.keep:
+                assert archive.saved is not None
+                flow.kept = archive.saved.path
+        assert held.saved is not None
+        return held.saved
+
     async def _stream(self, item: Item, plugin: str, url: str, part: files.Part,
                       client: net.Client) -> None:
         """One stream of a DASH pair into its part, as a `FILE` job of its host."""
@@ -1035,6 +1093,9 @@ class Saver:
         if item.file.password is not None or files.is_archive(path):
             step = await self._unpack(item, path, plugin)
             await self._write(self.store.update, item.key, **step)
+        elif landed.kept is not None:
+            await self._write(self.store.update, item.key,
+                              extracted=json.dumps([str(landed.kept)]))
         self._count(item, downloading=-1, saved=1, bytes=landed.row.size)
         await self.emit(Saved(item.target, item.category, item.post, path, landed.day,
                               landed.row.size, retried=item.retried))
@@ -1155,6 +1216,19 @@ def _final(error: BaseException) -> bool:
     """Whether a mirror's failure ends the file at once: it stops the run, or it is a 429,
     which the scheduler waits out on the same mirror."""
     return jobs.stops(error) or getattr(error, "status", None) == 429
+
+
+def _unzip(path: Path, scratch: Path, delays: Sequence[tuple[str, int]]) -> None:
+    """Check a frames zip's entry names against `delays`, then extract it into `scratch`."""
+    shutil.rmtree(scratch, ignore_errors=True)
+    try:
+        with zipfile.ZipFile(path) as archive:
+            names = archive.namelist()
+    except zipfile.BadZipFile as error:
+        raise Changed(f"the frames zip can't be read: {error}") from error
+    media.check_frames(names, delays)
+    scratch.mkdir(parents=True)
+    files.extract_into(path, scratch)
 
 
 def _extract(path: Path, password: str | None, here: bool) -> Path | list[Path]:

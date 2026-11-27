@@ -584,6 +584,18 @@ the same fields and checks. A category's own `folder` still wins over the plugin
   the archive stays. `File(unpack="here")` instead extracts into the post's folder, lifts a lone top
   folder's contents up one level, saves a clash with a file there as `name (2).ext` (nothing is
   replaced), and deletes the archive once extracted (kept on failure); the row keeps the file list.
+- `File.frames(url, delays, *, keep=False)` is a zip of numbered frames that is saved as one MP4.
+  `delays` is a non-empty list of `(frame file name, milliseconds)` pairs in play order, each
+  delay a positive whole number; a plugin that gives anything else, or a URL that isn't http or
+  https, fails with `PluginError`. The zip is downloaded as a part, like any URL file, then one
+  merge job unzips it into a scratch folder (deleted after), checks that every entry is named
+  like `000000.jpg` (six digits, then `jpg`, `jpeg`, `png` or `gif`, no folder) and that the
+  entries are exactly the names in `delays`, and runs ffmpeg on an ffconcat list (each delay in
+  seconds, the last frame listed once more so its delay counts). The video is H.264 in an MP4
+  (`-crf 18`, `yuv420p`, sides padded to even, `+faststart`), and its extension is `.mp4`. A zip
+  that doesn't match fails the file as `Changed`; a missing ffmpeg is a `ToolError`, as for DASH.
+  With `keep=True` the zip also stays beside the video as `<name>.zip`, never extracted; the
+  video's row lists it, so `status` and `check` don't take it for a stray file.
 
 ## Sync
 
