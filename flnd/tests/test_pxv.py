@@ -70,6 +70,8 @@ def fail(status, **more):
 def user_ctx(illusts=(), manga=(), works=None, **more):
     """A fake of user 12345678: the id lists, the works of each, and a pages answer for each."""
     works = works if works is not None else {}
+    # The name is kept already, so the profile asks no `/user/<id>`.
+    more.setdefault("state", {"names": {USER: "Example"}})
     table = {f"{AJAX}/user/{USER}/profile/all": profile(illusts, manga),
              f"{AJAX}/user/{USER}/profile/illusts": batch(works)}
     table.update({f"{AJAX}/illust/{id}/pages": pages(id) for id in works})
@@ -166,7 +168,7 @@ class FormsTest(unittest.TestCase):
         self.assertEqual(dict(Pixiv.limits), {"i.pximg.net": 4})
         self.assertEqual((Pixiv.pace, Pixiv.folder, Pixiv.filename, Pixiv.key, Pixiv.fields),
                          (2.0, "{category}", "{date}_{post}_p{num}", "{post}_{num}",
-                          ("title", "user")))
+                          ("title", "user", "name")))
 
 
 class ReaderTest(unittest.TestCase):
@@ -231,8 +233,8 @@ class ReaderTest(unittest.TestCase):
             f"{AJAX}/illust/5/pages": pages(5, 2)})
         found = collect(Pixiv, f"pxv:{USER}", ctx=ctx)
         self.assertEqual([(f.path, f.key) for f in found],
-                         [("illusts/2026-01-02_5_p0.png", "5_0"),
-                          ("illusts/2026-01-02_5_p1.png", "5_1")])
+                         [("Example_12345678/illusts/2026-01-02_5_p0.png", "5_0"),
+                          ("Example_12345678/illusts/2026-01-02_5_p1.png", "5_1")])
 
     def test_requests_carry_the_referer_and_accept_headers(self):
         ctx = user_ctx(illusts=(5,), works={"5": work(5)})
@@ -301,7 +303,7 @@ class SingleTest(unittest.TestCase):
         ctx = self.single()
         (one,) = collect(Pixiv, "pxv:artwork/5", ctx=ctx)
         self.assertEqual((one.url, one.path, one.key, one.post.owner, one.post.category),
-                         (f"{CDN}/5_p0.png", "12345678/illusts/2026-01-02_5_p0.png", "5_0", USER,
+                         (f"{CDN}/5_p0.png", "Example_12345678/illusts/2026-01-02_5_p0.png", "5_0", USER,
                           "illusts"))
         self.assertEqual(asked(ctx), ["/illust/5"])
 
@@ -309,7 +311,7 @@ class SingleTest(unittest.TestCase):
         ctx = self.single(illustType=1)
         (one,) = collect(Pixiv, "pxv:artwork/5", ctx=ctx)
         self.assertEqual((one.path, one.post.owner, one.post.category),
-                         ("12345678/manga/2026-01-02_5_p0.png", USER, "manga"))
+                         ("Example_12345678/manga/2026-01-02_5_p0.png", USER, "manga"))
 
     def test_a_many_page_work_reads_pages(self):
         ctx = self.single(pageCount=3)
@@ -322,8 +324,8 @@ class SingleTest(unittest.TestCase):
         ctx._routes[f"{AJAX}/illust/5/ugoira_meta"] = ugoira_meta()
         found = collect(Pixiv, "pxv:artwork/5", ctx=ctx)
         self.assertEqual([(one.path, one.post.owner, one.post.category) for one in found],
-                         [("12345678/ugoira/2026-01-02_5_p0.mp4", USER, "ugoira"),
-                          ("12345678/ugoira/2026-01-02_5_p0.json", USER, "ugoira")])
+                         [("Example_12345678/ugoira/2026-01-02_5_p0.mp4", USER, "ugoira"),
+                          ("Example_12345678/ugoira/2026-01-02_5_p0.json", USER, "ugoira")])
 
     def test_the_referer_header_is_on_the_post(self):
         ctx = self.single()
@@ -343,6 +345,52 @@ class SingleTest(unittest.TestCase):
         ctx = self.single(userId=None)
         with self.assertRaises(Changed):
             collect(Pixiv, "pxv:artwork/5", ctx=ctx)
+
+
+class NameTest(unittest.TestCase):
+    """`name`, the account's display name that folders a target, is kept as first seen."""
+
+    def profile_ctx(self, names=None):
+        ctx = user_ctx(illusts=(5,), works={"5": work(5, day=2)},
+                       state={"names": names} if names is not None else {},
+                       routes={f"{AJAX}/user/{USER}": ok({"name": "example_user"})})
+        return ctx
+
+    def test_a_profile_learns_its_name_once_per_run_and_keeps_it(self):
+        ctx = self.profile_ctx()
+        run(ctx, "illusts")
+        run(ctx, "manga")
+        self.assertEqual(asked(ctx).count(f"/user/{USER}"), 1)
+        self.assertEqual(dict(ctx.state["names"]), {USER: "example_user"})
+        (post,) = run(self.profile_ctx({USER: "example_user"}), "illusts")
+        self.assertEqual(post.fields["name"], "example_user")
+
+    def test_a_profile_and_a_single_work_land_under_the_id_and_name(self):
+        found = collect(Pixiv, f"pxv:{USER}", ctx=self.profile_ctx())
+        self.assertEqual({one.path for one in found},
+                         {f"example_user_{USER}/illusts/2026-01-02_5_p0.png"})
+        ctx = SingleTest().single(userName="example_user")
+        (one,) = collect(Pixiv, "pxv:artwork/5", ctx=ctx)
+        self.assertEqual(one.path, f"example_user_{USER}/illusts/2026-01-02_5_p0.png")
+        self.assertEqual(dict(ctx.state["names"]), {USER: "example_user"})
+
+    def test_a_stored_name_wins_and_costs_no_request(self):
+        ctx = self.profile_ctx({USER: "first"})
+        found = collect(Pixiv, f"pxv:{USER}", ctx=ctx)
+        self.assertEqual({one.path.split("/")[0] for one in found}, {f"first_{USER}"})
+        self.assertNotIn(f"/user/{USER}", asked(ctx))
+        ctx = SingleTest().single(userName="renamed")
+        ctx.state["names"] = {USER: "first"}
+        (one,) = collect(Pixiv, "pxv:artwork/5", ctx=ctx)
+        self.assertEqual(one.path.split("/")[0], f"first_{USER}")
+        self.assertEqual(dict(ctx.state["names"]), {USER: "first"})
+
+    def test_no_name_gives_the_id_alone(self):
+        ctx = user_ctx(illusts=(5,), works={"5": work(5, day=2)}, state={},
+                       routes={f"{AJAX}/user/{USER}": ok({})})
+        found = collect(Pixiv, f"pxv:{USER}", ctx=ctx)
+        self.assertEqual({one.path.split("/")[0] for one in found}, {USER})
+        self.assertNotIn("names", ctx.state)
 
 
 ZIP = "https://i.pximg.net/img-zip-ugoira/img/2026/01/02/03/04/05/{}_ugoira1920x1080.zip"
@@ -369,7 +417,7 @@ class UgoiraTest(unittest.TestCase):
     def test_both_keeps_the_zip_and_names_the_json_like_the_video(self):
         ctx, (video, info) = self.listing()
         self.assertEqual((video.path, info.path),
-                         ("ugoira/2026-01-02_7_p0.mp4", "ugoira/2026-01-02_7_p0.json"))
+                         ("Example_12345678/ugoira/2026-01-02_7_p0.mp4", "Example_12345678/ugoira/2026-01-02_7_p0.json"))
         self.assertEqual((video.file.url, video.file.keep, video.file.delays),
                          (ZIP.format(5), True, (("000000.jpg", 80), ("000001.jpg", 120))))
         text = info.file.content
@@ -378,7 +426,7 @@ class UgoiraTest(unittest.TestCase):
 
     def test_mp4_saves_the_video_alone(self):
         _, (video,) = self.listing(settings={"ugoira": "mp4"})
-        self.assertEqual((video.path, video.file.keep), ("ugoira/2026-01-02_7_p0.mp4", False))
+        self.assertEqual((video.path, video.file.keep), ("Example_12345678/ugoira/2026-01-02_7_p0.mp4", False))
 
     def test_another_value_warns_once_and_uses_both(self):
         ctx, found = self.listing(settings={"ugoira": "zip"})
@@ -641,9 +689,10 @@ class CaptchaTest(unittest.TestCase):
             return by_header() if count["n"] <= 2 else profile((1,))
 
         def make(user):
-            return FakeCtx(plugin, f"pxv:{user}", pages=self.tab, routes={
-                f"{AJAX}/user/{user}/profile/all": listing,
-                f"{AJAX}/user/{user}/profile/illusts": batch({"1": work(1)})})
+            routes = {f"{AJAX}/user/{user}/profile/all": listing,
+                      f"{AJAX}/user/{user}/profile/illusts": batch({"1": work(1)})}
+            return FakeCtx(plugin, f"pxv:{user}", pages=self.tab, routes=routes,
+                           state={"names": {user: "x"}})
 
         one, two = make("111"), make("222")
         opened = []
@@ -688,6 +737,7 @@ def inserted(**shown):
 
 
 def novel_ctx(text="pxv:novel/5", routes=None, **more):
+    more.setdefault("state", {"names": {USER: "Example"}})
     return FakeCtx(Pixiv, text, routes=routes or {}, **more)
 
 
@@ -712,7 +762,12 @@ class NovelTextTest(unittest.TestCase):
         text = self.body("[chapter:One]\nHello [[rb:kanji > reading]] [[jumpuri:site > "
                          "https://example.com/a]] [jump:3]\n[newpage]\n[other:x] [[rb:a]]")
         self.assertEqual(text, "## One\nHello <ruby>kanji<rt>reading</rt></ruby> "
-                               "[site](https://example.com/a) (page 3)\n---\n[other:x] [[rb:a]]")
+                               "[site](https://example.com/a) (page 3)\n\n---\n\n[other:x] [[rb:a]]")
+
+    def test_a_page_break_has_a_blank_line_on_each_side(self):
+        for content in ("a\n[newpage]\nb", "a[newpage]b"):
+            with self.subTest(content=content):
+                self.assertEqual(self.body(content), "a\n\n---\n\nb")
 
     def test_an_unsafe_jump_link_stays_text(self):
         for url in ("javascript:alert(1)", "ftp://example.com/a", "/relative",
@@ -741,11 +796,11 @@ class NovelFilesTest(unittest.TestCase):
             routes={f"{AJAX}/novel/5/insert_illusts": inserted(**{
                 "900-2": f"{CDN}/900_p1.jpg", "901-1": f"{CDN}/901_p0.png"})})
         self.assertEqual([(one.path, one.key) for one in found], [
-            ("12345678/novels/2026-01-02_5.md", "novel_5_0"),
-            ("12345678/novels/2026-01-02_5_cover.jpg", "novel_5_1"),
-            ("12345678/novels/2026-01-02_5_1.png", "novel_5_2"),
-            ("12345678/novels/2026-01-02_5_2.jpg", "novel_5_3"),
-            ("12345678/novels/2026-01-02_5_3.png", "novel_5_4")])
+            ("Example_12345678/novels/2026-01-02_5.md", "novel_5_0"),
+            ("Example_12345678/novels/2026-01-02_5_cover.jpg", "novel_5_1"),
+            ("Example_12345678/novels/2026-01-02_5_1.png", "novel_5_2"),
+            ("Example_12345678/novels/2026-01-02_5_2.jpg", "novel_5_3"),
+            ("Example_12345678/novels/2026-01-02_5_3.png", "novel_5_4")])
         names = [one.path.rpartition("/")[2] for one in found]
         self.assertEqual(names[0], "2026-01-02_5.md")
         self.assertEqual(names[2:], ["2026-01-02_5_1.png", "2026-01-02_5_2.jpg",
@@ -777,20 +832,20 @@ class NovelFilesTest(unittest.TestCase):
         _, found = novel_files("plain")
         cover = found[1]
         self.assertEqual((cover.path, cover.file.mirrors),
-                         ("12345678/novels/2026-01-02_5_cover.jpg", (f"{ORIGINAL}.jpg", f"{ORIGINAL}.png")))
+                         ("Example_12345678/novels/2026-01-02_5_cover.jpg", (f"{ORIGINAL}.jpg", f"{ORIGINAL}.png")))
 
     def test_a_default_cover_is_not_saved(self):
         for url in ("https://s.pximg.net/common/images/no_cover.png", "", None,
                     "https://example.com/novel-cover-master/a_master1200.jpg"):
             with self.subTest(url=url):
                 _, found = novel_files("plain", coverUrl=url)
-                self.assertEqual([one.path for one in found], ["12345678/novels/2026-01-02_5.md"])
+                self.assertEqual([one.path for one in found], ["Example_12345678/novels/2026-01-02_5.md"])
 
     def test_an_undated_novel_has_no_date_prefix(self):
         _, found = novel_files("[uploadedimage:77]", createDate=None,
                                textEmbeddedImages={"77": {"urls": {"original": EMBED.format(77)}}})
         self.assertEqual([one.path for one in found],
-                         ["12345678/novels/5.md", "12345678/novels/5_cover.jpg", "12345678/novels/5_1.png"])
+                         ["Example_12345678/novels/5.md", "Example_12345678/novels/5_cover.jpg", "Example_12345678/novels/5_1.png"])
 
     def test_a_novel_with_no_text_is_changed(self):
         with self.assertRaises(Changed):
@@ -805,7 +860,8 @@ class NovelListTest(unittest.TestCase):
             "illusts": [], "manga": [], "novels": listed(*ids) or []}}),
             f"{AJAX}/user/{USER}/profile/novels": batch(works)}
         routes.update({f"{AJAX}/novel/{n}": ok(novel_body("t", id=str(n))) for n in ids})
-        return FakeCtx(Pixiv, f"pxv:{USER}", routes=routes, head=head)
+        return FakeCtx(Pixiv, f"pxv:{USER}", routes=routes, head=head,
+                       state={"names": {USER: "Example"}})
 
     def test_newest_first_in_batches_of_100(self):
         ctx = self.novels(range(1, 251))
@@ -829,8 +885,8 @@ class NovelListTest(unittest.TestCase):
         ctx = self.novels([5])
         found = collect(Pixiv, f"pxv:{USER}", ctx=ctx, categories=["novels"])
         self.assertEqual([(one.path, one.key) for one in found[:2]],
-                         [("novels/2026-01-02_5.md", "novel_5_0"),
-                          ("novels/2026-01-02_5_cover.jpg", "novel_5_1")])
+                         [("Example_12345678/novels/2026-01-02_5.md", "novel_5_0"),
+                          ("Example_12345678/novels/2026-01-02_5_cover.jpg", "novel_5_1")])
 
     def test_a_masked_novel_is_hidden(self):
         ctx = self.novels([5], isMasked=True)
@@ -845,7 +901,7 @@ class NovelListTest(unittest.TestCase):
             f"{AJAX}/user/{USER}/profile/illusts": batch({"5": work(5)}),
             f"{AJAX}/user/{USER}/profile/novels": batch({"5": work(5)}),
             f"{AJAX}/illust/5/pages": pages(5), f"{AJAX}/novel/5": ok(novel_body("t"))}
-        ctx = FakeCtx(Pixiv, f"pxv:{USER}", routes=routes)
+        ctx = FakeCtx(Pixiv, f"pxv:{USER}", routes=routes, state={"names": {USER: "Example"}})
         found = collect(Pixiv, f"pxv:{USER}", ctx=ctx, categories=["illusts", "novels"])
         keys = [one.key for one in found]
         self.assertEqual(len(keys), len(set(keys)))
@@ -862,8 +918,8 @@ class SingleNovelTest(unittest.TestCase):
                 found = collect(Pixiv, text, ctx=ctx)
                 self.assertEqual(
                     [(one.path, one.key, one.post.owner, one.post.category) for one in found[:2]],
-                    [("12345678/novels/2026-01-02_5.md", "novel_5_0", USER, "novels"),
-                     ("12345678/novels/2026-01-02_5_cover.jpg", "novel_5_1", USER, "novels")])
+                    [("Example_12345678/novels/2026-01-02_5.md", "novel_5_0", USER, "novels"),
+                     ("Example_12345678/novels/2026-01-02_5_cover.jpg", "novel_5_1", USER, "novels")])
                 self.assertEqual(asked(ctx), ["/novel/5"])
 
     def test_post_fields(self):

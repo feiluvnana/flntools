@@ -101,10 +101,12 @@ class Pixiv(Plugin):
     pace = 2.0
     # The image CDN: 4 files at once, never the default.
     limits = {"i.pximg.net": 4}
+    # `name` is the display name of the account that owns the target, kept as first seen.
+    root = "{name}_{target}"
     folder = "{category}"
     filename = "{date}_{post}_p{num}"
     key = "{post}_{num}"
-    fields = ("title", "user")
+    fields = ("title", "user", "name")
     unsupported = _refused()
 
     class Settings(Plugin.Settings):
@@ -139,6 +141,8 @@ class Pixiv(Plugin):
     def __init__(self) -> None:
         # One instance serves a run: its users' readers and its API request count.
         self._users: dict[str, _User] = {}
+        # The users whose name was asked for in this run.
+        self._asked: set[str] = set()
         self._calls = 0
         self._solves = 0
         self._failed = False
@@ -181,7 +185,8 @@ class Pixiv(Plugin):
             files = (File(_image(id, urls["original"])),)
         else:
             files = functools.partial(self._pages, ctx, id)
-        yield _post(id, body, files, owner=str(owner), category=category)
+        yield _post(id, body, files, owner=str(owner), category=category,
+                    name=_keep(ctx, str(owner), body.get("userName")))
 
     @route(*((pattern, "novel/{id}") for pattern in (
         r"pxv:novel/{id:\d+}", r"pixiv.net/novel/show.php?id={id:\d+}",
@@ -205,7 +210,8 @@ class Pixiv(Plugin):
         if hidden is not None:
             raise hidden
         files = functools.partial(self._novel, ctx, id, None, body)
-        yield _post(id, body, files, owner=str(owner), category="novels")
+        yield _post(id, body, files, owner=str(owner), category="novels",
+                    name=_keep(ctx, str(owner), body.get("userName")))
 
     @route(*(pattern for pattern in (
         r"pxv:{id:\d+}", r"pixiv.net/users/{id:\d+}", r"pixiv.net/*/users/{id:\d+}",
@@ -266,6 +272,7 @@ class Pixiv(Plugin):
         reader = self._users.setdefault(user, _User(user))
         kind, listed = KINDS[category]
         ids = await reader.ids(self, ctx, listed)
+        name = await self._name(ctx, user)
         head = ctx.head
         for start in range(0, len(ids), BATCH):
             chosen = ids[start:start + BATCH]
@@ -280,15 +287,24 @@ class Pixiv(Plugin):
                     stamps.append(made)
                 if kind is None:
                     yield _post(id, work, functools.partial(self._novel, ctx, id, work),
-                                date=made)
+                                date=made, name=name)
                 elif work.get("illustType") == kind:
                     files = (functools.partial(self._ugoira, ctx, id, made, work) if kind == 2
                              else functools.partial(self._pages, ctx, id, work))
-                    yield _post(id, work, files, date=made)
+                    yield _post(id, work, files, date=made, name=name)
             # Ids are in upload order, so once a whole batch is older than the head, so is every
             # later one.
             if stamps and _older(max(stamps), head):
                 return
+
+    async def _name(self, ctx: Ctx, user: str) -> str:
+        """The name that folders a user: the one kept, else read once from the profile."""
+        kept = _keep(ctx, user, None)
+        if kept or user in self._asked:
+            return kept
+        self._asked.add(user)
+        body = await self.ajax(ctx, f"user/{user}", f"user {user}")
+        return _keep(ctx, user, body.get("name") if isinstance(body, dict) else None)
 
     async def _pages(self, ctx: Ctx, id: str, work: Mapping[str, Any] | None = None) -> list[File]:
         """One work's image files, one request; a masked work is `Hidden`."""
@@ -612,6 +628,17 @@ def _older(newest: int, head: Mapping[str, Any] | None) -> bool:
     return False
 
 
+def _keep(ctx: Ctx, user: str, name: Any) -> str:
+    """The display name kept for `user`; the first `name` seen is kept when there is none, so a
+    rename on pixiv never moves a folder."""
+    kept = ctx.state.get("names")
+    kept = dict(kept) if isinstance(kept, dict) else {}
+    if user not in kept and isinstance(name, str) and name:
+        kept[user] = name
+        ctx.state["names"] = kept
+    return kept.get(user, "")
+
+
 def _post(id: str, work: Mapping[str, Any], files: Any, *, date: int | None = None,
           **more: Any) -> Post:
     """A work as a post, its images downloaded with pixiv's Referer."""
@@ -678,7 +705,7 @@ IMAGE = r"\[((?:uploadedimage:\w+|pixivimage:\d+(?:-\d+)?))\]"
 NOVEL_IMAGES = re.compile(IMAGE)
 NOVEL_MARKUP = re.compile(
     r"\[\[rb:(?P<base>.+?) > (?P<ruby>.+?)\]\]|\[\[jumpuri:(?P<label>.+?) > (?P<url>.+?)\]\]"
-    r"|\[chapter:(?P<chapter>.+?)\]|(?P<page>\[newpage\])|\[jump:(?P<jump>\d+)\]"
+    r"|\[chapter:(?P<chapter>.+?)\]|(?P<page>\n?\[newpage\]\n?)|\[jump:(?P<jump>\d+)\]"
     r"|(?P<image>" + IMAGE + ")")
 
 
@@ -743,7 +770,8 @@ def _novel_text(body: Mapping[str, Any], names: Mapping[str, str], made: int | N
         if found["chapter"] is not None:
             return f"## {found['chapter']}"
         if found["page"] is not None:
-            return "---"
+            # A blank line each side, so no line above it reads as a heading underline.
+            return "\n\n---\n\n"
         if found["jump"] is not None:
             return f"(page {found['jump']})"
         tag = _tag(found["image"][1:-1])

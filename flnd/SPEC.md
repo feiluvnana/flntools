@@ -432,7 +432,7 @@ name):
 | `fbk` video, reel, photo | `videos`, `reels`, `photos` | `media/fbk/<owner>/<category>/` |
 | `fbk` post | `posts` | `media/fbk/<owner>/posts/` |
 | `loi` post | `archive`, `photo` | `media/loi/<author>/<post> <title>/` |
-| `pxv` artwork, novel | `illusts` `manga` `ugoira`; `novels` | `media/pxv/<user id>/<category>/` |
+| `pxv` artwork, novel | `illusts` `manga` `ugoira`; `novels` | `media/pxv/<name>_<id>/<cat>/` |
 
 The owner is the post's: `user.username`, `screen_name`, `uniqueId`, a Facebook vanity name else its
 id. With no owner in the data the post goes where it always did, `media/<code>/<post id>/`, with no
@@ -496,7 +496,7 @@ segment  = text and {field} / {field:format} / {field.attr} / {field[0]}; {{ and
 
 Plugin fields: `ins` `album`; `twt` `part n`; `tik` `part album idx`; `fbk` `part album`;
 `loi` `author title part`; `mht` `title order author genres chapters`; `smp` none;
-`pxv` `title user`; `web` `name`; a plugin of your own declares its `fields`.
+`pxv` `title user name`; `web` `name`; a plugin of your own declares its `fields`.
 
 Rendering: each `/` segment is filled alone. A missing or empty field drops the separators
 (`_ - space . : ,`) next to it, and a segment that comes out empty is left out, so `{date}_{target}`
@@ -1207,7 +1207,14 @@ up to 32.
   head (`ctx.head`), once a whole batch's newest `createDate` is strictly older than the head's
   time, no more batches are asked for, so a caught-up profile costs 2 requests; `novels` stops
   the same way.
-- **Folder:** `{category}`, under `media/pxv/<user id>/`. **Filename:** `{date}_{post}_p{num}`
+- **Root:** `{name}_{target}`: `name` is the display name of the account that owns the target (a
+  profile's user for each of its categories; a single work's owner), not the work's artist, who
+  stays in `user`; `target` is the user id. An empty name gives the id alone. The name is kept
+  as first seen, in the plugin's state (`names`, user id to name), so a rename on pixiv never
+  moves a folder. A profile reads it once per run, with `GET /ajax/user/<id>` (`body.name`),
+  only when none is kept; a single work uses its own `userName`.
+- **Folder:** `{category}`, under `media/pxv/<name>_<user id>/`. **Filename:**
+  `{date}_{post}_p{num}`
   (`p<num>` is pixiv's own page number); a novel's files set their own names (see Novels).
 - **Ugoira:** one `File.frames(originalSrc, frames, keep=...)`, so the video is
   `<date>_<post>_p0.mp4`. It needs ffmpeg, as DASH does (a missing one is a `ToolError`). Setting
@@ -1219,7 +1226,8 @@ up to 32.
   image. The `.md` starts with `# <title>`, then lines `- Author: https://www.pixiv.net/users/<id>`,
   `- Date: <day>`, `- Series: <title>, no. <order>` (only with a series), `- Tags: a, b` (only
   with tags) and the caption (`<br>` as newlines, other tags dropped), then `---` and the text.
-  Conversion: `[chapter:<t>]` is `## <t>`; `[newpage]` is `---`; `[[rb:<base> > <ruby>]]` is
+  Conversion: `[chapter:<t>]` is `## <t>`; `[newpage]` is `---` with a blank line each side;
+  `[[rb:<base> > <ruby>]]` is
   `<ruby>base<rt>ruby</rt></ruby>`; `[[jumpuri:<text> > <url>]]` is `[text](url)` for an http or
   https URL with no space or parenthesis, else the text alone; `[jump:<n>]` is `(page <n>)`;
   `[uploadedimage:<id>]` (from `textEmbeddedImages`) and `[pixivimage:<illust>-<page>]` (`<illust>`
@@ -1232,8 +1240,8 @@ up to 32.
   cover (pixiv's default image) is not saved. An undated novel has no `<date>_`. A novel's answer
   with no `content` is `Changed`.
 - **Key:** `{post}_{num}`; a novel's is `novel_{post}_{num}`, since artwork and novel ids are two
-  number series. **Fields:** `title`, `user` (the display name), never in the
-  defaults.
+  number series. **Fields:** `title`, `user` (the work's artist's display name), `name` (the
+  account's, above), never in the defaults.
 - **Login:** `PHPSESSID`, optional. Logged out, R-18 works are hidden.
 - **Errors:** read from the status, `error` and the body's shape, never the message text. 404, or
   `error` on a 200, is `NotFound`; 400 or 403 with `error` is `Hidden` (with the hint `log in:
@@ -1264,9 +1272,9 @@ up to 32.
   are not targets. A work edited later isn't seen by a
   sync; a user's private works are never listed. Answer shapes beyond the live checks are
   unverified.
-- **Saved as:** `media/pxv/12345678/illusts/2026-01-02_123456789_p0.png`,
-  `media/pxv/12345678/ugoira/2026-01-02_123456790_p0.mp4` (with `.zip` and `.json`),
-  `media/pxv/12345678/novels/2026-01-02_23456789.md` (with `_cover.jpg` and `_1.png`)
+- **Saved as:** `media/pxv/example_user_12345678/illusts/2026-01-02_123456789_p0.png`,
+  `media/pxv/example_user_12345678/ugoira/2026-01-02_123456790_p0.mp4` (with `.zip` and `.json`),
+  `media/pxv/example_user_12345678/novels/2026-01-02_23456789.md` (with `_cover.jpg` and `_1.png`)
 
 ### web (the web)
 
