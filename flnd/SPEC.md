@@ -1302,11 +1302,11 @@ Rules for changing the code are in `AGENTS.md`. The shape:
 
 ```text
 flnkit/   standalone toolkit, imports nothing of flnd: net browser files html dig text clock
-          db cookies media stream errors
+          db cookies media stream errors, and ui/: theme out forms
 src/      the package flnd
   _library.py cli.py errors.py plugin.py
   engine/  run jobs crawl save resolve plugins auth store config
-  ui/      theme out screen forms log (imports only flnkit, ui, events, errors)
+  ui/      screen log (imports only flnkit, ui, events, errors)
   plugins/ the built-ins, importing only flnd.plugin and the standard library
 ```
 

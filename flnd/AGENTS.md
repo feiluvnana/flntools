@@ -35,8 +35,8 @@ These rules are for anyone who changes flnd: how to check, lay out, name, write 
   the real user config in `~/.config/flnd/`, and keeps the browser's cache out of the real home.
 
 ## Layout
-Two packages sit side by side in this folder: `src/`, which installs as the package `flnd`,
-and `flnkit/`, a standalone package imported as `flnkit`. Its tree:
+Two packages: `src/` in this folder, which installs as the package `flnd`, and `flnkit/` beside
+this folder, at the repo root, a standalone package imported as `flnkit`. The tree:
 
 ```text
 src/                 the package flnd
@@ -60,12 +60,13 @@ src/                 the package flnd
     store.py       flnd.db: schema, rows, check and repair
     config.py      config.toml: structs and reading
   ui/              imports only flnkit, ui/, engine/events.py and src/errors.py
-    theme.py out.py screen.py forms.py log.py
+    screen.py log.py
   plugins/         built-ins, importing only flnd.plugin and the standard library
-    __init__.py (the table) fbk.py ins.py loi.py mht.py thr.py tik.py twt.py web.py
+    __init__.py (the table) fbk.py ins.py loi.py mht.py pxv.py smp.py thr.py tik.py twt.py web.py
 flnkit/              the standalone package flnkit, imports nothing of flnd
   net.py browser.py files.py html.py dig.py text.py clock.py db.py cookies.py media.py
   stream.py errors.py
+  ui/              the terminal ui: theme.py out.py forms.py
 ```
 
 The import rules, checked by `tests/test_layers.py` by reading every file's imports:
@@ -79,7 +80,7 @@ The import rules, checked by `tests/test_layers.py` by reading every file's impo
    `src/_library.py` imports `src/engine/*`, `flnkit`, `src/errors.py` and `src/plugin.py`.
 5. `src/plugins/*` imports only `flnd.plugin` and the standard library, plus its own SDK, if it has
    one (`loi` has `cryptography`), imported inside a function.
-6. `src/cli.py` imports only `flnd` (its version), `src/ui/*`, `src/plugins/__init__.py`,
+6. `src/cli.py` imports only `flnd` (its version), `src/ui/*`, `flnkit/ui/*`, `src/plugins/__init__.py`,
    `flnd._library`, `flnd.errors`, `flnd.engine.events` and `flnd.engine.run` (the run's type).
 7. `src/__init__.py` imports nothing at import time beyond the standard library.
 
