@@ -71,7 +71,8 @@ def fail(status, **more):
 def user_ctx(illusts=(), manga=(), works=None, **more):
     """A fake of user 12345678: the id lists, the works of each, and a pages answer for each."""
     works = works if works is not None else {}
-    table = {f"{AJAX}/user/{USER}/profile/all": profile(illusts, manga),
+    table = {f"{AJAX}/user/{USER}": ok({"name": "Example", "imageBig": None, "background": None}),
+             f"{AJAX}/user/{USER}/profile/all": profile(illusts, manga),
              f"{AJAX}/user/{USER}/profile/illusts": batch(works)}
     table.update({f"{AJAX}/illust/{id}/pages": pages(id) for id in works})
     return FakeCtx(Pixiv, f"pxv:{USER}", routes={**table, **more.pop("routes", {})}, **more)
@@ -161,7 +162,8 @@ class FormsTest(unittest.TestCase):
     def test_declarations(self):
         self.assertTrue(check(Pixiv))
         self.assertEqual(Pixiv.categories,
-                         ("illusts", "manga", "ugoira", "novels", "shiori", "novelshiori"))
+                         ("illusts", "manga", "ugoira", "novels", "profile", "shiori",
+                          "novelshiori"))
         self.assertEqual([one.name for one in Pixiv.user.categories if not one.own],
                          ["shiori", "novelshiori"])
         self.assertEqual(Pixiv.domains, ("pixiv.net", "pixiv.me"))
@@ -1040,3 +1042,39 @@ class BookmarkTest(unittest.TestCase):
             ("Reader_12345678/novelshiori/2026-01-02_title_5_5_cover.jpg", "novel_5_1")])
         self.assertIn(f"/user/{USER}/novels/bookmarks?tag=&offset=0&limit=24&rest=show",
                       asked(ctx))
+
+
+AVATAR = "https://i.pximg.net/user-profile/img/2026/01/02/03/04/05/abcdef0123456789_170.jpg"
+HEADER = "https://i.pximg.net/c/1920x960/background/img/2025/12/31/03/04/05/fedcba9876543210.png"
+
+
+class ProfilePictureTest(unittest.TestCase):
+    def listing(self, **about):
+        ctx = FakeCtx(Pixiv, f"pxv:{USER}", routes={
+            f"{AJAX}/user/{USER}": ok({"name": "Reader", **about})})
+        return ctx, collect(Pixiv, f"pxv:{USER}", ctx=ctx, categories=["profile"])
+
+    def test_the_avatar_and_header_originals_are_named_for_their_day(self):
+        ctx, found = self.listing(imageBig=AVATAR, background={"url": HEADER})
+        self.assertEqual([(one.file.url, one.path, one.key) for one in found], [
+            ("https://i.pximg.net/user-profile/img/2026/01/02/03/04/05/abcdef0123456789.jpg",
+             "Reader_12345678/profile/avatar_2026-01-02.jpg",
+             "Reader_12345678/profile/avatar_2026-01-02.jpg"),
+            ("https://i.pximg.net/background/img/2025/12/31/03/04/05/fedcba9876543210.png",
+             "Reader_12345678/profile/background_2025-12-31.png",
+             "Reader_12345678/profile/background_2025-12-31.png")])
+        self.assertEqual(asked(ctx), [f"/user/{USER}?full=1"])
+
+    def test_no_header_or_a_default_avatar_saves_only_the_other(self):
+        _, found = self.listing(imageBig=AVATAR, background=None)
+        self.assertEqual([one.path for one in found],
+                         ["Reader_12345678/profile/avatar_2026-01-02.jpg"])
+        _, found = self.listing(imageBig="https://s.pximg.net/common/images/no_profile.png",
+                                background={"url": HEADER})
+        self.assertEqual([one.path for one in found],
+                         ["Reader_12345678/profile/background_2025-12-31.png"])
+
+    def test_profile_is_an_own_category_that_is_not_newest_first(self):
+        found = next(one for one in Pixiv.user.categories if one.name == "profile")
+        self.assertEqual((found.own, found.folder, found.key, found.newest_first),
+                         (True, "profile", "{path}", False))

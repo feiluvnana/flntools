@@ -166,7 +166,7 @@ class BuiltInTest(unittest.TestCase):
             "loi": ("archive photo", "post"),
             "mht": ("chapters cover", "chapter"),
             "smp": ("images videos", ""),
-            "pxv": ("illusts manga ugoira novels shiori novelshiori", "artwork novel"),
+            "pxv": ("illusts manga ugoira novels profile shiori novelshiori", "artwork novel"),
             "web": ("", "page"),
         }
         for code, plugin in built_in().items():

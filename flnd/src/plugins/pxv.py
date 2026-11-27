@@ -252,6 +252,24 @@ class Pixiv(Plugin):
         async for post in self._posts(ctx, user, "novels"):
             yield post
 
+    @user.category(folder="profile", key="{path}", newest_first=False)
+    async def profile(self, ctx: Ctx, user: str) -> AsyncIterator[Post]:
+        """The avatar at its original size, and the header image when there is one. Each is
+        named for the day its file was uploaded, so a new picture is saved beside the old."""
+        about = await self._users.setdefault(user, _User(user)).about(self, ctx)
+        name = str(about.get("name") or "")
+        background = about.get("background")
+        files = []
+        for kind, url in (("avatar", _avatar(about.get("imageBig"))),
+                          ("background", _background(background.get("url") if isinstance(
+                              background, dict) else None))):
+            if url is None:
+                ctx.log("debug", "pxv: user {id} has no {kind} picture", id=user, kind=kind)
+                continue
+            files.append(File(url, name=_picture(kind, url)))
+        if files:
+            yield Post(user, files, headers=REFERER, title="", user=name, name=name)
+
     @user.category(own=False, folder="shiori", newest_first=False)
     async def shiori(self, ctx: Ctx, user: str) -> AsyncIterator[Post]:
         """The artworks the user bookmarked (the private ones too, on the login's own account),
@@ -719,6 +737,32 @@ def _older(newest: int, head: Mapping[str, Any] | None) -> bool:
     return False
 
 
+def _avatar(url: Any) -> str | None:
+    """The original of an avatar: `imageBig` without the `_<n>` before its extension; None for
+    pixiv's default picture (not a `user-profile` image)."""
+    if not _on_cdn(url) or "/user-profile/" not in url:
+        return None
+    parts = urlsplit(url)
+    return parts._replace(path=re.sub(r"_\d+(\.\w+)$", r"\1", parts.path), query="").geturl()
+
+
+def _background(url: Any) -> str | None:
+    """The original of a header image: its URL without the `/c/<size>/` crop part; None when
+    there is none."""
+    if not _on_cdn(url) or "/background/" not in url:
+        return None
+    parts = urlsplit(url)
+    return parts._replace(path=re.sub(r"^/c/[^/]+/", "/", parts.path), query="").geturl()
+
+
+def _picture(kind: str, url: str) -> str:
+    """A profile picture's name, `avatar_2026-01-02.jpg`: the day in the CDN's path
+    (`/img/YYYY/MM/DD/`), else the CDN's own name; the extension is kept."""
+    path = PurePosixPath(urlsplit(url).path)
+    day = re.search(r"/img/(\d{4})/(\d{2})/(\d{2})/", str(path))
+    return f"{kind}_{'-'.join(day.groups()) if day else path.stem}{path.suffix}"
+
+
 def _bookmark_page(user: str, kind: str, rest: str, offset: int) -> Request:
     """The request for one page of a user's bookmarks, from `offset`."""
     limit = BOOKMARKS[kind]
@@ -783,13 +827,17 @@ class _User:
                               for name in ("illusts", "manga", "novels")}
             return self.lists[listed]
 
-    async def name(self, owner: Pixiv, ctx: Ctx) -> str:
-        """The account's own display name, asked once for the run; "" when it has none."""
+    async def about(self, owner: Pixiv, ctx: Ctx) -> Mapping[str, Any]:
+        """The account's own answer, `user/<id>?full=1`, asked once for the run."""
         async with self.lock:
             if self.shown is None:
                 body = await owner.ajax(ctx, f"user/{self.id}?full=1", f"user {self.id}")
                 self.shown = body if isinstance(body, dict) else {}
-            return str(self.shown.get("name") or "")
+            return self.shown
+
+    async def name(self, owner: Pixiv, ctx: Ctx) -> str:
+        """The account's own display name; "" when it has none."""
+        return str((await self.about(owner, ctx)).get("name") or "")
 
     async def batch(self, owner: Pixiv, ctx: Ctx, listed: str,
                     ids: Sequence[str]) -> Mapping[str, Any]:

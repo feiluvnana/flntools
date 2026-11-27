@@ -377,7 +377,7 @@ A category is one part of a target that can be got alone. Each plugin's list is 
 | `loi` | `archive photo` | none |
 | `mht` | `chapters cover` | none |
 | `smp` | `images videos` | none |
-| `pxv` | `illusts manga ugoira novels` | `shiori novelshiori` |
+| `pxv` | `illusts manga ugoira novels profile` | `shiori novelshiori` |
 | `web` | none | none |
 
 Write the list after `|`, and quote the target, since `|` is the shell's pipe:
@@ -1225,7 +1225,14 @@ up to 32.
   newest first; `illusts` and `ugoira` share the profile's illust id list and batches. With a sync
   head (`ctx.head`), once a whole batch's newest `createDate` is strictly older than the head's
   time, no more batches are asked for, so a caught-up profile costs 2 requests; `novels` stops
-  the same way. `shiori` (the artworks the user bookmarked) and `novelshiori` (the novels) are
+  the same way. `profile` is own and not newest first, `folder="profile"`, `key="{path}"`:
+  `GET /ajax/user/<id>?full=1` (asked once a run, and shared with the bookmarks' name) gives
+  `imageBig`, the avatar, whose original is its path without the `_<n>` before the extension
+  (a default picture, which isn't a `user-profile` image, is skipped), and `background.url`
+  (null when there is none), whose original has the `/c/<size>/` crop part removed. They are
+  one post of the user's id, named `avatar_<YYYY-MM-DD>` and `background_<YYYY-MM-DD>` from the
+  day in the CDN path (`/img/YYYY/MM/DD/`), extension kept, so a new picture lands beside the
+  old. `shiori` (the artworks the user bookmarked) and `novelshiori` (the novels) are
   opt-in and not newest first: a bookmark carries its work's date, not its own, so each is read
   to its end on every run. `GET /ajax/user/<id>/illusts/bookmarks?tag=&offset=<n>&limit=48&
   rest=show` (`novels/bookmarks`, `limit=24`) goes through `ctx.pages` with the offset as the
@@ -1242,8 +1249,8 @@ up to 32.
   stays in `user`; `target` is the user id. An empty name gives the id alone. The name comes from
   `userName` of the works the profile lists (each is the profile user's own) or of the single
   work; the engine keeps the root the first save gave, so a rename on pixiv never moves a folder
-  (see [`root`](#root)). For `shiori` and `novelshiori` it is the bookmarking account's, from
-  `GET /ajax/user/<id>?full=1` (`body.name`) once a run; no other category asks for it.
+  (see [`root`](#root)). For `shiori`, `novelshiori` and `profile` it is the account's own,
+  from `GET /ajax/user/<id>?full=1` (`body.name`) once a run; the other categories don't ask.
 - **Folder:** `{category}`, under `media/pxv/<name>_<user id>/`. **Filename:**
   `{date}_{title:.40}_{post}_p{num}`
   (`title` is the work's own title; `p<num>` is pixiv's own page number); a novel's files set
@@ -1317,7 +1324,8 @@ up to 32.
   `media/pxv/example_user_12345678/ugoira/2026-01-02_Waves_123456790_p0.mp4`
   (with `.zip` and `.json`),
   `media/pxv/example_user_12345678/novels/2026-01-02_Example_Story_23456789.md`
-  (with `_cover.jpg` and `_1.png`)
+  (with `_cover.jpg` and `_1.png`),
+  `media/pxv/example_user_12345678/profile/avatar_2026-01-02.jpg`
 
 ### web (the web)
 
