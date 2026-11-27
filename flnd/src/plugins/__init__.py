@@ -28,5 +28,6 @@ TABLE = (
     Entry("twt", "flnd.plugins.twt", "Twitter", ("x.com", "twitter.com")),
     Entry("loi", "flnd.plugins.loi", "Loibus", ("loix.cc", "moegoat.com")),
     Entry("mht", "flnd.plugins.mht", "Mimi", ("mimihentai.moe",)),
+    Entry("smp", "flnd.plugins.smp", "Simp", ("simpcity.cr", "simpcity.su")),
     Entry("web", "flnd.plugins.web", "Web", ()),
 )

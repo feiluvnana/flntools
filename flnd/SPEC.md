@@ -131,7 +131,7 @@ Refusals, with the text printed (all `UsageError`, exit 2, before any request):
 - (empty): `a target can't be empty`
 - `example_user`: `which plugin is "example_user"? Write it as tik:example_user, fbk:example_user,
   ins:example_user, ...`
-- `nope:x`: `no plugin named nope`; hint `Plugins: tik, fbk, ins, thr, twt, loi, mht, web`
+- `nope:x`: `no plugin named nope`; hint `Plugins: tik, fbk, ins, thr, twt, loi, mht, smp, web`
 - `ins:`: `ins: write a value after ins:`; hint `Write it like <every form of the plugin>`
 - `ins:%`: `ins: can't read '%'`; hint `Write it like <every form of the plugin>`
 - `ins:example_user|nope`: `ins has no category nope`; hint `Categories: posts, reels, tagged,
@@ -278,6 +278,18 @@ Query terms: plain words (title), `title:`, `author:`, `genre:` (repeatable), `-
 `genre`, a term with no value, a `chapters:` that is not a number, and an empty query are refused.
 `mht:chapter/5|chapters` is `mht:chapter/5 is one post, with no categories`.
 
+**smp**
+
+| Form | Route | Reads |
+| --- | --- | --- |
+| `smp:<id>`, `simpcity.cr/threads/<slug>.<id>/...`, `.../threads/<id>/` | `thread` | a thread |
+
+`simpcity.su` reads too. Anything after a link's id is ignored (`page-<n>`, `latest`, `#post-<n>`).
+Refused:
+`simpcity.cr/` alone, `/forums`, `/members`, `/search`, `/tags`, `/whats-new`, `/watched`,
+`/conversations`, `/account` and `/posts`, with `smp: that page isn't supported; give a thread or a
+post: smp:<id>, smp:post/<id>` (a post route comes in a later step).
+
 **web**
 
 | Form | Route | Reads |
@@ -343,6 +355,7 @@ A category is one part of a target that can be got alone. Each plugin's list is 
 | `fbk` | `posts highlights photos albums reels videos stories profile` | `tagged` |
 | `loi` | `archive photo` | none |
 | `mht` | `chapters cover` | none |
+| `smp` | `images videos` | none |
 | `web` | none | none |
 
 Write the list after `|`, and quote the target, since `|` is the shell's pipe:
@@ -442,7 +455,7 @@ segment  = text and {field} / {field:format} / {field.attr} / {field[0]}; {{ and
 | plugin fields | each plugin's `fields`, listed below the table |
 
 Plugin fields: `ins` `album`; `twt` `part n`; `tik` `part album idx`; `fbk` `part album`;
-`loi` `author title part`; `mht` `title order author genres chapters`; `web` `name`;
+`loi` `author title part`; `mht` `title order author genres chapters`; `smp` none; `web` `name`;
 a plugin of your own declares its `fields`.
 
 Rendering: each `/` segment is filled alone. A missing or empty field drops the separators
@@ -1069,6 +1082,45 @@ up to 32.
 - **Known gaps:** `chapters:<n>` is an exact count, checked on each result; negation works for
   genres only; `mht:<number>` is always a manga.
 - **Saved as:** `media/mht/1234567890/chapters/001_Example_Chapter/001.jpg`
+
+### smp (SimpCity)
+
+- **Reads:** a forum thread's posts over HTTP with the login's cookies, newest page first: the
+  first read asks `/threads/<id>/latest` (its redirect names the last page), a sync starts at the
+  last page the plugin's state saved (`thread:<id>`), goes through `latest` when that page has a
+  newer one, then reads page by page backward. A post is `article.message[data-content]`, dated by
+  `time.u-dt[data-timestamp]`; `.message-signature`, `blockquote.bbCodeBlock--quote` and
+  `.bbCodeBlock--unfurl` are left out. Outbound links (`/<x>/?to=`, `url=`, `u=`, base64 or plain)
+  are decoded here and never requested. No target is ever yielded; links to other sites are not
+  collected yet.
+- **Categories:** `images`, `videos` (own, NF). Images: goonbox links (`/img/<id>`, album
+  `/a/<id>` through `/api/albums/<id>/images`) and thumbnails on `*.cuckcapital.cr`,
+  `*.host.church`, `*.jpg5.su` (`.md.`, `.th.`, `.fr.` taken out of the name). Videos: turbo
+  (`/embed/`, `/v/`, `/d/`; `/api/sign?v=<id>`, signed and lazy, so `refresh` lists it again).
+  A post's files are listed lazily; each link counts once per post; a removed or changed file is
+  warned about and left out, and the post fails only when nothing is left.
+- **Folder:** `{category}`, under `media/smp/<thread id>/`. **Filename:** `{date}_{post}_{num}`, or
+  `{date}_{post}_{original name}` when the host gives one. **Key:** `{post}_{num}`.
+- **Login:** a cookie whose name matches `.+_user`; required.
+- **Limits and walls:** pace 5 s plus up to 7 s of jitter (5 to 12 s) before each forum page, one
+  page at a time; a 45 to 90 s break every 25 pages; at most `pages_per_hour` (default 300,
+  `[plugins.smp]`) forum pages an hour, counted in the plugin's state, then it pauses until the
+  hour turns (`smp: pausing until 14:00 UTC, hourly page budget`). `Referer` is the thread's
+  previous page. DDoS-Guard's 403 (`server: ddos-guard`) is a block, held 30 s, 2 min, 8 min;
+  `/login` and `data-logged-in="false"` are the login wall. Only http and https links to a name
+  (never an IP address, `localhost` or a local name) are used; a host's API answer must come from
+  its own domain; an HTML answer where a file was expected fails that file.
+- **Captcha:** a page that lands on `/captcha` opens a browser tab (`browser` is `any`; none
+  opens otherwise) and asks a person to solve it, up to 10 minutes; one target at a time, the
+  others wait. Then the request is made again over HTTP and this hour's page budget is halved. If
+  nobody solves it, or it comes back at once, every smp target of the run fails with `smp:
+  simpcity.cr wants a captcha` (hint `open simpcity.cr in your browser, solve it, then run again`)
+  and is never retried.
+- **Known gaps:** a post edited later isn't seen by a sync; a cut-short first download reads its
+  pages again from the newest; the same file in two posts of a thread is saved twice; no post
+  route, `links`, `hosted` category, attachments or file hosts but goonbox and turbo yet; host API
+  shapes are unverified live.
+- **Saved as:** `media/smp/123/images/2026-01-01_456_name.jpg`
 
 ### web (the web)
 
