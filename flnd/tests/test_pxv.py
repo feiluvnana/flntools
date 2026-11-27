@@ -116,6 +116,18 @@ class FormsTest(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertEqual(Pixiv.resolve(text), Target("pxv:artwork/5", kind="artwork"))
 
+    def test_novel_forms(self):
+        for text in ("pxv:novel/5", "https://www.pixiv.net/novel/show.php?id=5",
+                     "https://www.pixiv.net/en/novel/show.php?id=5",
+                     "pixiv.net/novel/show.php?id=5"):
+            with self.subTest(text=text):
+                self.assertEqual(Pixiv.resolve(text), Target("pxv:novel/5", kind="novel"))
+
+    def test_refusals_name_the_novel(self):
+        with self.assertRaises(UsageError) as raised:
+            Pixiv.resolve("https://www.pixiv.net/ranking.php")
+        self.assertIn("give a user, an artwork or a novel", str(raised.exception))
+
     def test_a_name_is_refused_with_the_number_hint(self):
         for text in ("pxv:example_user", "pxv:@example_user", "PXV:example.user"):
             with self.subTest(text=text), self.assertRaises(UsageError) as raised:
@@ -147,7 +159,7 @@ class FormsTest(unittest.TestCase):
 
     def test_declarations(self):
         self.assertTrue(check(Pixiv))
-        self.assertEqual(Pixiv.categories, ("illusts", "manga", "ugoira"))
+        self.assertEqual(Pixiv.categories, ("illusts", "manga", "ugoira", "novels"))
         self.assertEqual(Pixiv.domains, ("pixiv.net", "pixiv.me"))
         self.assertTrue(Pixiv.login.proves("PHPSESSID"))
         self.assertFalse(Pixiv.login.required)
@@ -654,6 +666,224 @@ class CaptchaTest(unittest.TestCase):
         results = asyncio.run(both())
         self.assertEqual(len(opened), 1)
         self.assertEqual([ids(found) for found in results], [["1"], ["1"]])
+
+
+COVER = ("https://i.pximg.net/c/600x600/novel-cover-master/img/2026/01/02/03/04/05/"
+         "abc_master1200.jpg")
+ORIGINAL = "https://i.pximg.net/novel-cover-original/img/2026/01/02/03/04/05/abc"
+EMBED = "https://i.pximg.net/novel-uplimg/img/2026/01/02/03/04/05/{}.png"
+
+
+def novel_body(content="text", **more):
+    return {"id": "5", "title": "title 5", "userId": USER, "userName": "Example",
+            "createDate": "2026-01-02T12:00:00+09:00", "content": content, "description": "",
+            "tags": {"tags": []}, "seriesNavData": None, "coverUrl": COVER,
+            "textEmbeddedImages": None, **more}
+
+
+def inserted(**shown):
+    return ok({key: {"illust": {"images": {"original": value}} if value else None,
+                     "visible": bool(value), "unavailableType": None if value else 1}
+               for key, value in shown.items()})
+
+
+def novel_ctx(text="pxv:novel/5", routes=None, **more):
+    return FakeCtx(Pixiv, text, routes=routes or {}, **more)
+
+
+def novel_files(content, routes=None, **more):
+    """The files of single novel 5, as (path, file) pairs, with the fake's logs."""
+    body = ok(novel_body(content, **more))
+    ctx = novel_ctx(routes={f"{AJAX}/novel/5": body, **(routes or {})})
+    return ctx, collect(Pixiv, "pxv:novel/5", ctx=ctx)
+
+
+def markdown(content, **more):
+    _, found = novel_files(content, **more)
+    return next(one for one in found if one.path.endswith(".md")).file.content
+
+
+class NovelTextTest(unittest.TestCase):
+    def body(self, content, **more):
+        text = markdown(content, **more)
+        return text.split("\n---\n\n", 1)[1].rstrip("\n")
+
+    def test_every_tag(self):
+        text = self.body("[chapter:One]\nHello [[rb:kanji > reading]] [[jumpuri:site > "
+                         "https://example.com/a]] [jump:3]\n[newpage]\n[other:x] [[rb:a]]")
+        self.assertEqual(text, "## One\nHello <ruby>kanji<rt>reading</rt></ruby> "
+                               "[site](https://example.com/a) (page 3)\n---\n[other:x] [[rb:a]]")
+
+    def test_an_unsafe_jump_link_stays_text(self):
+        for url in ("javascript:alert(1)", "ftp://example.com/a", "/relative",
+                    "https://example.com/a)b"):
+            with self.subTest(url=url):
+                self.assertEqual(self.body(f"[[jumpuri:label > {url}]]"), "label")
+
+    def test_the_header(self):
+        text = markdown("body", description="one<br />two <b>bold</b> &amp; more",
+                        tags={"tags": [{"tag": "a"}, {"tag": "b"}]},
+                        seriesNavData={"title": "Saga", "order": 2})
+        head = text.split("\n---\n\n", 1)[0].rstrip("\n")
+        self.assertEqual(head, f"# title 5\n\n- Author: {SITE}/users/{USER}\n- Date: 2026-01-02\n"
+                               "- Series: Saga, no. 2\n- Tags: a, b\n\none\ntwo bold & more")
+
+    def test_a_header_without_series_tags_or_caption(self):
+        head = markdown("body").split("\n---\n\n", 1)[0].rstrip("\n")
+        self.assertEqual(head, f"# title 5\n\n- Author: {SITE}/users/{USER}\n- Date: 2026-01-02")
+
+
+class NovelFilesTest(unittest.TestCase):
+    def test_images_are_named_linked_and_listed(self):
+        content = "[uploadedimage:77]a[pixivimage:900-2][uploadedimage:77][pixivimage:901]"
+        ctx, found = novel_files(
+            content, textEmbeddedImages={"77": {"urls": {"original": EMBED.format(77)}}},
+            routes={f"{AJAX}/novel/5/insert_illusts": inserted(**{
+                "900-2": f"{CDN}/900_p1.jpg", "901-1": f"{CDN}/901_p0.png"})})
+        self.assertEqual([(one.path, one.key) for one in found], [
+            ("novels/2026-01-02_5.md", "novel_5_0"),
+            ("novels/2026-01-02_5_cover.jpg", "novel_5_1"),
+            ("novels/2026-01-02_5_1.png", "novel_5_2"),
+            ("novels/2026-01-02_5_2.jpg", "novel_5_3"),
+            ("novels/2026-01-02_5_3.png", "novel_5_4")])
+        names = [one.path.rpartition("/")[2] for one in found]
+        self.assertEqual(names[0], "2026-01-02_5.md")
+        self.assertEqual(names[2:], ["2026-01-02_5_1.png", "2026-01-02_5_2.jpg",
+                                     "2026-01-02_5_3.png"])
+        self.assertEqual([one.url for one in found[2:]],
+                         [EMBED.format(77), f"{CDN}/900_p1.jpg", f"{CDN}/901_p0.png"])
+        text = found[0].file.content
+        self.assertIn("![](2026-01-02_5_1.png)a![](2026-01-02_5_2.jpg)![](2026-01-02_5_1.png)"
+                      "![](2026-01-02_5_3.png)", text)
+        # One request for the novel, one for all its inserted illustrations.
+        self.assertEqual(asked(ctx), ["/novel/5",
+                                      "/novel/5/insert_illusts?id[]=900-2&id[]=901-1"])
+
+    def test_a_hidden_inserted_image_stays_text_with_a_warning(self):
+        ctx, found = novel_files(
+            "[pixivimage:900-1] [pixivimage:901-1]",
+            routes={f"{AJAX}/novel/5/insert_illusts": inserted(**{
+                "900-1": None, "901-1": f"{CDN}/901_p0.png"})})
+        text = found[0].file.content
+        self.assertIn("[pixivimage:900-1] ![](2026-01-02_5_1.png)", text)
+        self.assertEqual(len([one for one in found if one.path.endswith(".png")]), 1)
+        self.assertEqual([level for level, line in ctx.seen.logs if "900-1" in line], ["warn"])
+
+    def test_no_inserted_request_without_inserted_images(self):
+        ctx, _ = novel_files("plain")
+        self.assertEqual(asked(ctx), ["/novel/5"])
+
+    def test_the_cover_original_and_its_mirrors(self):
+        _, found = novel_files("plain")
+        cover = found[1]
+        self.assertEqual((cover.path, cover.file.mirrors),
+                         ("novels/2026-01-02_5_cover.jpg", (f"{ORIGINAL}.jpg", f"{ORIGINAL}.png")))
+
+    def test_a_default_cover_is_not_saved(self):
+        for url in ("https://s.pximg.net/common/images/no_cover.png", "", None,
+                    "https://example.com/novel-cover-master/a_master1200.jpg"):
+            with self.subTest(url=url):
+                _, found = novel_files("plain", coverUrl=url)
+                self.assertEqual([one.path for one in found], ["novels/2026-01-02_5.md"])
+
+    def test_an_undated_novel_has_no_date_prefix(self):
+        _, found = novel_files("[uploadedimage:77]", createDate=None,
+                               textEmbeddedImages={"77": {"urls": {"original": EMBED.format(77)}}})
+        self.assertEqual([one.path for one in found],
+                         ["novels/5.md", "novels/5_cover.jpg", "novels/5_1.png"])
+
+    def test_a_novel_with_no_text_is_changed(self):
+        with self.assertRaises(Changed):
+            novel_files(None)
+
+
+class NovelListTest(unittest.TestCase):
+    def novels(self, ids, head=None, count=None, **more):
+        works = {str(n): work(n, day=1 + n * 27 // max(1, (count or max(ids))), **more)
+                 for n in ids}
+        routes = {f"{AJAX}/user/{USER}/profile/all": Reply({"error": False, "body": {
+            "illusts": [], "manga": [], "novels": listed(*ids) or []}}),
+            f"{AJAX}/user/{USER}/profile/novels": batch(works)}
+        routes.update({f"{AJAX}/novel/{n}": ok(novel_body("t", id=str(n))) for n in ids})
+        return FakeCtx(Pixiv, f"pxv:{USER}", routes=routes, head=head)
+
+    def test_newest_first_in_batches_of_100(self):
+        ctx = self.novels(range(1, 251))
+        found = run(ctx, "novels")
+        self.assertEqual(ids(found)[:2], ["250", "249"])
+        urls = [url for url in asked(ctx) if "profile/novels" in url]
+        self.assertEqual([url.count("ids[]=") for url in urls], [100, 100, 50])
+        self.assertTrue(all("work_category" not in url for url in urls))
+
+    def test_an_empty_list(self):
+        ctx = self.novels([])
+        self.assertEqual(run(ctx, "novels"), [])
+        self.assertEqual(asked(ctx), [f"/user/{USER}/profile/all"])
+
+    def test_the_head_stops_the_batches(self):
+        ctx = self.novels(range(1, 251), head={"id": "250", "ts": stamp(28)})
+        run(ctx, "novels")
+        self.assertEqual(len([url for url in asked(ctx) if "profile/novels" in url]), 2)
+
+    def test_files_are_lazy_and_use_the_category_folder_and_key(self):
+        ctx = self.novels([5])
+        found = collect(Pixiv, f"pxv:{USER}", ctx=ctx, categories=["novels"])
+        self.assertEqual([(one.path, one.key) for one in found[:2]],
+                         [("novels/2026-01-02_5.md", "novel_5_0"),
+                          ("novels/2026-01-02_5_cover.jpg", "novel_5_1")])
+
+    def test_a_masked_novel_is_hidden(self):
+        ctx = self.novels([5], isMasked=True)
+        (one,) = run(ctx, "novels")
+        with self.assertRaises(Hidden):
+            asyncio.run(one.files())
+        self.assertNotIn("/novel/5", asked(ctx))
+
+    def test_novel_keys_never_clash_with_artwork_keys(self):
+        routes = {f"{AJAX}/user/{USER}/profile/all": Reply({"error": False, "body": {
+            "illusts": listed(5), "manga": [], "novels": listed(5)}}),
+            f"{AJAX}/user/{USER}/profile/illusts": batch({"5": work(5)}),
+            f"{AJAX}/user/{USER}/profile/novels": batch({"5": work(5)}),
+            f"{AJAX}/illust/5/pages": pages(5), f"{AJAX}/novel/5": ok(novel_body("t"))}
+        ctx = FakeCtx(Pixiv, f"pxv:{USER}", routes=routes)
+        found = collect(Pixiv, f"pxv:{USER}", ctx=ctx, categories=["illusts", "novels"])
+        keys = [one.key for one in found]
+        self.assertEqual(len(keys), len(set(keys)))
+        self.assertIn("5_0", keys)
+        self.assertIn("novel_5_0", keys)
+
+
+class SingleNovelTest(unittest.TestCase):
+    def test_every_form_is_filed_by_owner_with_one_request(self):
+        for text in ("pxv:novel/5", "https://www.pixiv.net/novel/show.php?id=5",
+                     "https://www.pixiv.net/en/novel/show.php?id=5"):
+            with self.subTest(text=text):
+                ctx = novel_ctx(text, routes={f"{AJAX}/novel/5": ok(novel_body("t"))})
+                found = collect(Pixiv, text, ctx=ctx)
+                self.assertEqual(
+                    [(one.path, one.key, one.post.owner, one.post.category) for one in found[:2]],
+                    [("novels/2026-01-02_5.md", "novel_5_0", USER, "novels"),
+                     ("novels/2026-01-02_5_cover.jpg", "novel_5_1", USER, "novels")])
+                self.assertEqual(asked(ctx), ["/novel/5"])
+
+    def test_post_fields(self):
+        ctx = novel_ctx(routes={f"{AJAX}/novel/5": ok(novel_body("t"))})
+
+        async def go():
+            return [item async for item in ctx._plugin.novel(ctx, "novel/5")]
+        (one,) = asyncio.run(go())
+        self.assertEqual((dict(one.headers), one.date, one.fields["title"], one.fields["user"]),
+                         (REFERER, stamp(2), "title 5", "Example"))
+
+    def test_a_missing_novel_is_not_found(self):
+        ctx = novel_ctx(routes={f"{AJAX}/novel/5": fail(404)})
+        with self.assertRaises(NotFound):
+            collect(Pixiv, "pxv:novel/5", ctx=ctx)
+
+    def test_a_novel_with_no_owner_is_changed(self):
+        ctx = novel_ctx(routes={f"{AJAX}/novel/5": ok(novel_body("t", userId=None))})
+        with self.assertRaises(Changed):
+            collect(Pixiv, "pxv:novel/5", ctx=ctx)
 
 
 if __name__ == "__main__":

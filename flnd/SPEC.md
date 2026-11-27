@@ -298,16 +298,18 @@ post: smp:<id>, smp:post/<id>` (a post route comes in a later step).
 | `pixiv.net/member.php?id=<id>`, `/member_illust.php?id=<id>` (old links) | `user` | the same |
 | `pxv:artwork/<id>`, `pixiv.net/artworks/<id>`, `/<lang>/artworks/<id>` | `artwork` | one work |
 | `pixiv.net/i/<id>`, `/member_illust.php?illust_id=<id>` (old links) | `artwork` | the same |
+| `pxv:novel/<id>`, `pixiv.net/novel/show.php?id=<id>`, `/<lang>/novel/...` | `novel` | one novel |
 
 A link's tab (`/illustrations`, `/manga`, `/bookmarks/artworks`) is ignored. `pixiv.me/<name>` has
 no route: the resolver follows it to `/users/<id>`. Only a user's number is a target:
 `pxv:example_user` is `pxv: a pixiv user is written by its number: pxv:12345678`, hint `the number
 in pixiv.net/users/<number>; a pixiv.me/<name> link works too`. Refused with `pxv: <what> isn't
-supported; give a user or an artwork: pxv:12345678, pxv:artwork/12345678`: `pixiv.net/` alone,
+supported; give a user, an artwork or a novel: pxv:12345678, pxv:artwork/12345678,
+pxv:novel/12345678`: `pixiv.net/` alone,
 series (`/novel/series/...`, `/user/<id>/series/...`), `/ranking.php`, `/discovery`, `/request`,
 `/bookmark_new_illust.php`, `/stacc`, `/settings`, `/dashboard`, `/tags` (search comes later),
 `sketch.pixiv.net` and `comic.pixiv.net`. `pxv:artwork/5|manga` is `pxv:artwork/5 is one post, with
-no categories`. Novels (`pxv:novel/<id>`) and tag search (`pxv?<words>`) are not built yet.
+no categories`. Tag search (`pxv?<words>`) is not built yet.
 
 **web**
 
@@ -375,7 +377,7 @@ A category is one part of a target that can be got alone. Each plugin's list is 
 | `loi` | `archive photo` | none |
 | `mht` | `chapters cover` | none |
 | `smp` | `images videos` | none |
-| `pxv` | `illusts manga ugoira` | none |
+| `pxv` | `illusts manga ugoira novels` | none |
 | `web` | none | none |
 
 Write the list after `|`, and quote the target, since `|` is the shell's pipe:
@@ -430,7 +432,7 @@ name):
 | `fbk` video, reel, photo | `videos`, `reels`, `photos` | `media/fbk/<owner>/<category>/` |
 | `fbk` post | `posts` | `media/fbk/<owner>/posts/` |
 | `loi` post | `archive`, `photo` | `media/loi/<author>/<post> <title>/` |
-| `pxv` artwork | `illusts`, `manga`, `ugoira` | `media/pxv/<user id>/<category>/` |
+| `pxv` artwork, novel | `illusts` `manga` `ugoira`; `novels` | `media/pxv/<user id>/<category>/` |
 
 The owner is the post's: `user.username`, `screen_name`, `uniqueId`, a Facebook vanity name else its
 id. With no owner in the data the post goes where it always did, `media/<code>/<post id>/`, with no
@@ -1171,22 +1173,47 @@ up to 32.
   gives its category (0 `illusts`, 1 `manga`, 2 `ugoira`); a one-page work uses
   `urls.original`, any other `/pages`. An ugoira's files: `/ajax/illust/<id>/ugoira_meta`, whose
   `originalSrc` is the full-size zip (`src`, the small one, with a warning when it is missing;
-  neither is `Changed`) and `frames[] = {file, delay}` (milliseconds).
+  neither is `Changed`) and `frames[] = {file, delay}` (milliseconds). A user's novels: the
+  `novels` list of `profile/all` (an object keyed by id, or `[]`), then
+  `/profile/novels?ids[]=...`, 100 a request (`body.works` by id), kept and shared like the
+  others. A novel's files: `/ajax/novel/<id>` (`content`, `title`, `createDate`, `userId`,
+  `description`, `tags.tags[].tag`, `seriesNavData`, `coverUrl`, `textEmbeddedImages`), and for
+  `[pixivimage:...]` one `/ajax/novel/<id>/insert_illusts?id[]=<illust>-<page>&...` for all of
+  them (`body[<illust>-<page>].illust.images.original`, `visible`). A single novel asks
+  `/ajax/novel/<id>` once, files it by its `userId` under `novels`, and reuses the answer.
   `sign` adds `Referer: https://www.pixiv.net/` and `Accept:
   application/json` to `/ajax/` requests, and each post carries the Referer for its images.
-- **Categories:** `illusts` (`illustType` 0), `manga` (1) and `ugoira` (2), all own and newest
-  first; `illusts` and `ugoira` share the profile's illust id list and batches. With a sync
+- **Categories:** `illusts` (`illustType` 0), `manga` (1), `ugoira` (2) and `novels`, all own and
+  newest first; `illusts` and `ugoira` share the profile's illust id list and batches. With a sync
   head (`ctx.head`), once a whole batch's newest `createDate` is strictly older than the head's
-  time, no more batches are asked for, so a caught-up profile costs 2 requests.
+  time, no more batches are asked for, so a caught-up profile costs 2 requests; `novels` stops
+  the same way.
 - **Folder:** `{category}`, under `media/pxv/<user id>/`. **Filename:** `{date}_{post}_p{num}`
-  (`p<num>` is pixiv's own page number).
+  (`p<num>` is pixiv's own page number); a novel's files set their own names (see Novels).
 - **Ugoira:** one `File.frames(originalSrc, frames, keep=...)`, so the video is
   `<date>_<post>_p0.mp4`. It needs ffmpeg, as DASH does (a missing one is a `ToolError`). Setting
   `ugoira` under `[plugins.pxv]`: `"both"` (the default) keeps the zip beside the video as
   `<date>_<post>_p0.zip` and adds `<date>_<post>_p0.json` (`File.text`: `mime_type` and the
   `frames` as pixiv gave them); `"mp4"` saves the video alone. Any other value warns once and
   is read as `"both"`. An undated post has no `<date>_`.
-- **Key:** `{post}_{num}`. **Fields:** `title`, `user` (the display name), never in the
+- **Novels:** a post's files are the text `<date>_<post>.md` (`File.text`), the cover, then each
+  image. The `.md` starts with `# <title>`, then lines `- Author: https://www.pixiv.net/users/<id>`,
+  `- Date: <day>`, `- Series: <title>, no. <order>` (only with a series), `- Tags: a, b` (only
+  with tags) and the caption (`<br>` as newlines, other tags dropped), then `---` and the text.
+  Conversion: `[chapter:<t>]` is `## <t>`; `[newpage]` is `---`; `[[rb:<base> > <ruby>]]` is
+  `<ruby>base<rt>ruby</rt></ruby>`; `[[jumpuri:<text> > <url>]]` is `[text](url)` for an http or
+  https URL with no space or parenthesis, else the text alone; `[jump:<n>]` is `(page <n>)`;
+  `[uploadedimage:<id>]` (from `textEmbeddedImages`) and `[pixivimage:<illust>-<page>]` (`<illust>`
+  alone is page 1) are `![](<image name>)`. Anything else stays as written, and so does an image
+  that is not visible or has no original, with a `warn` log. An image is
+  `<date>_<post>_<n><extension of its URL>`, `n` from 1 in text order over the images that
+  resolved, each distinct image once. A cover that is an `i.pximg.net` `novel-cover-master` image
+  is saved as its original (the `/c/<size>/` part removed, `novel-cover-original`,
+  `_master1200` dropped) with `File(mirrors=[.jpg, .png])`, named `<date>_<post>_cover`; any other
+  cover (pixiv's default image) is not saved. An undated novel has no `<date>_`. A novel's answer
+  with no `content` is `Changed`.
+- **Key:** `{post}_{num}`; a novel's is `novel_{post}_{num}`, since artwork and novel ids are two
+  number series. **Fields:** `title`, `user` (the display name), never in the
   defaults.
 - **Login:** `PHPSESSID`, optional. Logged out, R-18 works are hidden.
 - **Errors:** read from the status, `error` and the body's shape, never the message text. 404, or
@@ -1213,12 +1240,14 @@ up to 32.
   solves it, or the tab's request is checked too, every pxv target of the run fails with `pxv:
   pixiv.net wants a captcha` (hint `open www.pixiv.net in your browser, solve it, then run again`)
   and is never retried. Images from `i.pximg.net` are never checked.
-- **Known gaps:** not built yet: `novels`, `profile`, `shiori` and
-  `novelshiori` categories, novel targets and tag search. A work edited later isn't seen by a
+- **Known gaps:** not built yet: `profile`, `shiori` and
+  `novelshiori` categories and tag search. A novel's series is shown in its header only; series
+  are not targets. A work edited later isn't seen by a
   sync; a user's private works are never listed. Answer shapes beyond the live checks are
   unverified.
 - **Saved as:** `media/pxv/12345678/illusts/2026-01-02_123456789_p0.png`,
-  `media/pxv/12345678/ugoira/2026-01-02_123456790_p0.mp4` (with `.zip` and `.json`)
+  `media/pxv/12345678/ugoira/2026-01-02_123456790_p0.mp4` (with `.zip` and `.json`),
+  `media/pxv/12345678/novels/2026-01-02_23456789.md` (with `_cover.jpg` and `_1.png`)
 
 ### web (the web)
 
