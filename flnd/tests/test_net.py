@@ -678,8 +678,7 @@ class ValveTest(unittest.TestCase):
 
 class HolesTest(NetCase):
     def test_a_part_written_in_segments_starts_a_plain_fill_over(self):
-        # An older flnd's sidecar (`holes`) and today's (`segments`) alike.
-        for side in ('{"holes": true}', '{"size": 4100, "segments": [[0, 4100, 9]]}'):
+        for side in ('{"size": 4100, "segments": [[0, 4100, 9]]}',):
             with self.subTest(side):
                 self.sent.clear()
                 self.stage.write_bytes(bytes(len(BODY)))

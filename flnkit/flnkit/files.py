@@ -109,15 +109,12 @@ class Part:
     def meta(self) -> dict[str, Any]:
         """What the sidecar `<part>.json` says about the bytes kept: `etag`, and for a part
         written in segments `last_modified`, `size` and `segments` (`[[start, end, written]]`).
-        An older flnd's `holes` reads as segments it didn't keep (`[]`): start over.
 
         Read once, and only for a part that holds bytes; a fresh part has none, so this costs a
         new download nothing.
         """
         if self._meta is None:
             self._meta = _read_side(self.side_path) if self.size else {}
-            if "holes" in self._meta:
-                self._meta = {"segments": []}
             self.side = self.side or bool(self._meta)
         return self._meta
 

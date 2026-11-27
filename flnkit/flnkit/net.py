@@ -1019,7 +1019,7 @@ class Client:
                     resume: bool, meter: Meter) -> Mapping[str, str]:
         """One try at a file: resume the part, or start over."""
         if not resume or (held.size and "segments" in held.meta):
-            # A part written in segments (or an older flnd's with holes) isn't one run of bytes.
+            # A part written in segments isn't one run of bytes.
             held.reset()
         offset = held.size
         validator = held.meta.get("etag") if offset else None
