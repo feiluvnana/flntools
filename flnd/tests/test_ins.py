@@ -632,6 +632,35 @@ class PostTest(unittest.TestCase):
                     (f"SINGLE/{DAY}_SINGLE_1.mp4", "SINGLE_1")])
                 self.assertEqual((ctx.seen.requests, ctx.seen.scrolls), ([], 0))
 
+    def test_files_are_named_by_the_captions_first_words(self):
+        for caption, name in [
+            ("Sunset at the beach #sea\nmore", f"{DAY}_Sunset_at_the_beach_SINGLE_0.jpg"),
+            (None, f"{DAY}_SINGLE_0.jpg"),
+            ("#sea @example_user", f"{DAY}_SINGLE_0.jpg"),
+            ("x" * 60, f"{DAY}_{'x' * 40}_SINGLE_0.jpg"),
+        ]:
+            with self.subTest(caption=caption):
+                extra = {} if caption is None else {"caption": {"text": caption}}
+                media = {"code": "SINGLE", "taken_at": STAMP, "carousel_media": [
+                    image("https://cdn.example/a.jpg"), image("https://cdn.example/b.jpg")],
+                    **extra}
+                page = embedded({"data": {"xdt_api__v1__media__shortcode__web_info": {
+                    "items": [media]}}})
+                ctx = fake(routes={}, pages={f"{SITE}/p/SINGLE/": FakePage(page)})
+                saved = run("https://www.instagram.com/p/SINGLE/", ctx=ctx)
+                self.assertEqual(saved[0].path.split("/")[-1], name)
+
+    def test_a_lazy_posts_files_are_named_with_the_caption_from_its_page(self):
+        pk = pk_at(STAMP)
+        grid_item = {"code": "LZ", "pk": pk, "product_type": "feed"}
+        page = post_page("LZ", pk=pk, taken_at=STAMP, caption={"text": "Lazy words #x"},
+                         **image("https://cdn.example/lz.jpg"))
+        ctx = fake(routes={f"{SITE}/example_lazy/": grid(grid_item)},
+                   pages={f"{SITE}/example_lazy/": FakePage(embedded(grid(grid_item))),
+                          f"{SITE}/p/LZ/": FakePage(page)})
+        saved = run("ins:example_lazy", categories=["posts"], ctx=ctx)
+        self.assertEqual([item.path.split("/")[-1] for item in saved], [f"{DAY}_Lazy_words_LZ.jpg"])
+
     def test_a_page_without_the_post_is_not_found(self):
         """S3: no post, another post's code, or a post without files is `NotFound`."""
         other = post_page("OTHER", taken_at=STAMP, **image("https://cdn.example/o.jpg"))

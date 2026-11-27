@@ -204,6 +204,18 @@ class PostTest(unittest.TestCase):
                 self.assertEqual(fakes.filed(Threads, link, found), folder)
                 self.assertEqual(found.key, "SINGLE_0")
 
+    def test_files_are_named_by_the_captions_first_words(self):
+        for caption, name in [
+            ("Morning walk #sunrise\nsecond line", f"{DAY}_Morning_walk_SINGLE.jpg"),
+            (None, f"{DAY}_SINGLE.jpg"),
+            ("#sunrise @example_user", f"{DAY}_SINGLE.jpg"),
+            ("x" * 60, f"{DAY}_{'x' * 40}_SINGLE.jpg"),
+        ]:
+            with self.subTest(caption=caption):
+                extra = {} if caption is None else {"caption": {"text": caption}}
+                [found] = run("thr:post/SINGLE", ctx=self.single(**extra))
+                self.assertEqual(found.path.split("/")[-1], name.replace(" ", "_"))
+
     def test_a_page_without_the_post_is_not_found(self):
         ctx = fake(pages={f"{SITE}/t/NONE": FakePage(embedded({"data": {}}))})
         with self.assertRaisesRegex(NotFound, "its page holds no post"):

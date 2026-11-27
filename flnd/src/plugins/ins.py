@@ -34,6 +34,7 @@ from flnd.plugin import (
     best,
     cookies,
     dig,
+    headline,
     meta,
     page_info,
     route,
@@ -151,10 +152,10 @@ class Instagram(Plugin):
     # A throttled session is sent to the login wall, which lifts after a wait; lock/challenge
     # walls abort immediately in `blocked()`.
     walls = ("/accounts/login",)
-    fields = ("album",)
-    # The day, the code, and the file's number when the post has more than one: the names saved
-    # files have always had.
-    filename = "{date}_{post}{index}"
+    fields = ("album", "title")
+    # The day, the caption's first words, the code, and the file's number when the post has more
+    # than one. Stories, highlights and the picture name their own files.
+    filename = "{date}_{title:.40}_{post}{index}"
     # Every story link, a user's or a highlight's: a story expires, but the profile lists them all.
     unsupported = {
         "instagram.com/stories": (
@@ -297,7 +298,7 @@ class Instagram(Plugin):
         await profile.describe(ctx)
         if profile.picture:
             picture = File(profile.picture, name=picture_name(profile.picture))
-            yield Post(profile.user, [picture], headers=CDN_HEADERS)
+            yield Post(profile.user, [picture], headers=CDN_HEADERS, title="")
 
 
 def throttled(result: Any) -> bool:
@@ -612,7 +613,7 @@ def lazy_post(ctx: Ctx, code: str, pk: str | None, plugin: Instagram | None = No
             return []
         return files_of(media, named=True)
 
-    return Post(code, files, date=pk_stamp(pk), headers=CDN_HEADERS)
+    return Post(code, files, date=pk_stamp(pk), headers=CDN_HEADERS, title="")
 
 
 # ---------------------------------------------------------------------------------------------
@@ -719,7 +720,7 @@ def post_of(media: dict) -> Post:
     clip = media.get("product_type") == "clips" or "clips_metadata" in media
     return Post(post_name(media), files_of(media), date=media.get("taken_at"),
                 headers=CDN_HEADERS, owner=dig(media, "user.username"),
-                category="reels" if clip else "posts")
+                category="reels" if clip else "posts", title=title_of(media))
 
 
 def files_of(media: dict, *, named: bool = False) -> list[File]:
@@ -732,12 +733,13 @@ def files_of(media: dict, *, named: bool = False) -> list[File]:
     """
     found = post_files(media)
     code, taken = post_name(media), utc_day(media.get("taken_at"))
+    title = title_of(media)
     files = []
     for n, (urls, extension, audio) in enumerate(found):
         stem = f"{code}_{n}" if len(found) > 1 else code
         # A URL with another extension, or none, is named so saved names stay as they were.
         own = named or PurePosixPath(urlsplit(urls[0]).path).suffix.lower() != f".{extension}"
-        name = file_name(taken, stem, extension) if own else None
+        name = file_name(taken, stem, extension, title) if own else None
         files.append(as_file(urls, audio, name=name))
     return files
 
@@ -756,12 +758,17 @@ def story_post(story: dict) -> Post | None:
     music = dig(story, STORY_MUSIC)
     if isinstance(music, str):
         files.append(File(music, name=file_name(taken, f"{story_id}_music", "m4a")))
-    return Post(story_id, files, date=story.get("taken_at"), headers=CDN_HEADERS)
+    return Post(story_id, files, date=story.get("taken_at"), headers=CDN_HEADERS, title="")
 
 
-def file_name(taken: str | None, stem: str, extension: str) -> str:
-    """A file's name: `2026-01-02_C1abc_0.jpg`, or `C1abc_0.jpg` for a post without a day."""
-    return f"{taken}_{stem}.{extension}" if taken else f"{stem}.{extension}"
+def file_name(taken: str | None, stem: str, extension: str, title: str = "") -> str:
+    """A file's name: `2026-01-02_Sunset_C1abc_0.jpg`; the day and the title drop when empty."""
+    return "_".join(part for part in (taken, title[:40], stem) if part) + f".{extension}"
+
+
+def title_of(media: dict) -> str:
+    """A post's title: the first words of its caption; "" for none."""
+    return headline(dig(media, "caption.text"))
 
 
 def utc_day(value: Any) -> str | None:

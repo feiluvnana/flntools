@@ -510,9 +510,9 @@ characters of `title`, and the cleaner then runs on the cut text. `flnd.plugin.h
 makes a title of a caption: its first non-empty line, with `#tags`, `@names` and `http(s)` URLs
 removed, whitespace squeezed to single spaces and trimmed ("" for nothing left).
 
-Plugin fields: `ins` `album`; `twt` `part n`; `tik` `part album idx title`; `fbk` `part album`;
-`loi` `author title part`; `mht` `title order author genres chapters`; `smp` none;
-`pxv` `title user name`; `web` `name`; a plugin of your own declares its `fields`.
+Plugin fields: `ins` `album title`; `thr` `title`; `twt` `part n`; `tik` `part album idx title`;
+`fbk` `part album`; `loi` `author title part`; `mht` `title order author genres chapters`;
+`smp` none; `pxv` `title user name`; `web` `name`; a plugin of your own declares its `fields`.
 
 Rendering: each `/` segment is filled alone. A missing or empty field drops the separators
 (`_ - space . : ,`) next to it, and a segment that comes out empty is left out, so `{date}_{target}`
@@ -988,7 +988,9 @@ up to 32.
   `reposts` (opt-in). A pinned post does not count toward the stop for older posts. A repost
   carries the original post's date, so `reposts` is read to its end.
 - **Folder:** `{category}`; `highlights/{album}` (a folder per highlight); `profile`.
-- **Filename:** `{date}_{post}{index}`; a story with music also saves `..._music.m4a`.
+- **Filename:** `{date}_{title:.40}_{post}{index}` (`title` is the caption's first words, see
+  `headline`; empty, it leaves no `_`); stories, highlights and the picture keep their names; a
+  story with music also saves `..._music.m4a`.
 - **Key:** `{post}_{num}` (`ins:C1abc_0`); `stories`, `highlights`, `profile` key by `{path}`.
 - **Login:** cookie `sessionid` (optional).
 - **Limits and walls:** pace 2.0; no host limits; wall `/accounts/login`. Lock/challenge walls
@@ -999,7 +1001,7 @@ up to 32.
 - **Known gaps:** story links are refused; only stories active now; a private post is `NotFound`,
   not `Hidden`; `tagged`, `stories`, `profile` are read in full on every run; once complete,
   `highlights` stops after 2 unchanged albums unless `--again`.
-- **Saved as:** `media/ins/example_user/posts/2026-01-02_Cexample123_0.jpg`,
+- **Saved as:** `media/ins/example_user/posts/2026-01-02_Sunset_at_the_beach_Cexample123_0.jpg`,
   `media/ins/example_user/highlights/Travel/2026-01-02_1234567890.mp4`
 
 ### thr (Threads)
@@ -1011,8 +1013,8 @@ up to 32.
   kept in `posts` and `replies`; a post without files is skipped.
 - **Folder:** `{category}`; `profile`. A single post goes in its owner's folder, as a reply (its
   `reply_to_author` set) under `replies`, else `posts`.
-- **Filename:** `{date}_{post}{index}`; a carousel or video post saves each file, a video as its
-  best MP4.
+- **Filename:** `{date}_{title:.40}_{post}{index}` (`title` is `headline` of the caption; empty,
+  it leaves no `_`); a carousel or video post saves each file, a video as its best MP4.
 - **Key:** `{post}_{num}` (`thr:C1abc_0`); `profile` keys by `{path}`.
 - **Login:** cookie `sessionid`, as Instagram's (optional).
 - **Limits and walls:** pace 2.0; walls `/login`, `/accounts/login`. Lock/challenge walls
@@ -1021,7 +1023,7 @@ up to 32.
   `spam` fails with non-retryable `Blocked`; "Please wait a few minutes" answers are blocks.
   429s hold and reload once per progress (no-progress reloads abort).
 - **Known gaps:** a post is opened by `/t/<code>`; only images and videos are saved.
-- **Saved as:** `media/thr/example_user/posts/2026-01-02_C1abc_0.jpg`
+- **Saved as:** `media/thr/example_user/posts/2026-01-02_Morning_walk_C1abc_0.jpg`
 
 ### twt (Twitter/X)
 

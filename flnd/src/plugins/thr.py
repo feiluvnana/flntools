@@ -30,6 +30,7 @@ from flnd.plugin import (
     best,
     cookies,
     dig,
+    headline,
     meta,
     page_info,
     route,
@@ -99,7 +100,8 @@ class Threads(Plugin):
     # Started as Instagram's, the same stack; measure on a live run.
     pace = 2.0
     walls = ("/login", "/accounts/login")
-    filename = "{date}_{post}{index}"
+    fields = ("title",)
+    filename = "{date}_{title:.40}_{post}{index}"
     unsupported = {
         f"{host}/{path}": reason
         for host in ("threads.com", "threads.net")
@@ -192,7 +194,7 @@ class Threads(Plugin):
         await profile.describe(ctx)
         if profile.picture:
             name = urlsplit(profile.picture).path.rsplit("/", 1)[-1] or "profile.jpg"
-            yield Post(profile.user, [File(profile.picture, name=name)])
+            yield Post(profile.user, [File(profile.picture, name=name)], title="")
 
 
 def throttled(result: Any) -> bool:
@@ -353,18 +355,20 @@ def post_of(media: dict) -> Post:
     """A post with its files read (`taken_at` is its date); a reply is `replies`, else `posts`."""
     reply = dig(media, "text_post_app_info.reply_to_author")
     return Post(str(media["code"]), files_of(media), date=media.get("taken_at"),
-                owner=dig(media, "user.username"), category="replies" if reply else "posts")
+                owner=dig(media, "user.username"), category="replies" if reply else "posts",
+                title=headline(dig(media, "caption.text")))
 
 
 def files_of(media: dict) -> list[File]:
     """Each file of a post, named here only where the templates would name it otherwise."""
     found = post_files(media)
     code, taken = str(media["code"]), utc_day(media.get("taken_at"))
+    title = headline(dig(media, "caption.text"))[:40]
     files = []
     for n, (url, extension) in enumerate(found):
         stem = f"{code}_{n}" if len(found) > 1 else code
         own = PurePosixPath(urlsplit(url).path).suffix.lower() != f".{extension}"
-        name = f"{taken}_{stem}.{extension}" if taken else f"{stem}.{extension}"
+        name = "_".join(part for part in (taken, title, stem) if part) + f".{extension}"
         files.append(File(url, name=name if own else None))
     return files
 
