@@ -44,8 +44,11 @@ class Mimi(Plugin):
     # The site publishes no limit, and each chapter costs a request: half a second keeps a long
     # manga gentle on its API.
     pace = 0.5
+    # The manga's folder is `<title>_<id>`; a chapter link's data has no manga title, so it
+    # files under its manga's stored folder, else under the id alone.
+    root = "{name}_{target}"
     folder = "chapters/{order} {title}"
-    fields = ("title", "order", "author", "genres", "chapters")
+    fields = ("title", "order", "author", "genres", "chapters", "name")
     # Every page and the cover are named here (`File.name`, the extension from the content), so
     # this is never used.
     filename = "{post}"
@@ -82,7 +85,7 @@ class Mimi(Plugin):
         owner = None if manga_id is None else str(manga_id)
         yield Post(info["id"], _chapter_pages(body), date=info.get("created_at"),
                    order=format_order(info.get("order")), title=info.get("title") or "",
-                   owner=owner, category="chapters" if owner else None)
+                   name="", owner=owner, category="chapters" if owner else None)
 
     @route(r"mht:{id:\d+}", r"mimihentai.moe/manga/{id:\d+}", newest_first=False)
     async def manga(self, ctx: Ctx, id: str) -> dict[str, Any]:
@@ -118,7 +121,8 @@ class Mimi(Plugin):
                 return _chapter_pages(body) if isinstance(body, dict) else []
 
             yield Post(chapter_id, files, date=item.get("created_at"),
-                       order=format_order(item.get("order")), title=item.get("title") or "")
+                       order=format_order(item.get("order")), title=item.get("title") or "",
+                       name=manga["title"])
 
     @manga.category(own=True, folder="cover", key="{post}_cover")
     async def cover(self, ctx: Ctx, manga: dict[str, Any]) -> AsyncIterator[Post]:
@@ -226,6 +230,7 @@ def _manga_fields(manga: Mapping[str, Any]) -> dict[str, Any]:
     count = manga.get("chapter_count")
     return {
         "title": manga.get("title") or "",
+        "name": manga.get("title") or "",
         "author": authors or str(manga.get("author") or ""),
         "genres": genres,
         "chapters": count if count is not None else "",

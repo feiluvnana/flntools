@@ -32,10 +32,10 @@ LOOKUPS = {
     "parodies/search": {"data": [{"id": 55, "name": "example_parody"}]},
 }
 EVERY_FILE = [
-    ("chapters/001_First_Chapter/001.webp", "1001_0"),
-    ("chapters/001_First_Chapter/002.jpg", "1001_1"),
-    ("chapters/1.5_Bonus/001.webp", "1002_0"),
-    ("cover/cover.webp", "70982_cover"),
+    ("Example_Manga_70982/chapters/001_First_Chapter/001.webp", "1001_0"),
+    ("Example_Manga_70982/chapters/001_First_Chapter/002.jpg", "1001_1"),
+    ("Example_Manga_70982/chapters/1.5_Bonus/001.webp", "1002_0"),
+    ("Example_Manga_70982/cover/cover.webp", "70982_cover"),
 ]
 
 
@@ -149,7 +149,12 @@ class MangaTest(unittest.TestCase):
         saved = collect(Mimi, "https://mimihentai.moe/manga/70982/chapter/1001", ctx=fake())
         # A chapter link sits in its manga's folder, where the `chapters` category puts it.
         self.assertEqual([(item.path, item.key) for item in saved],
-                         [(f"70982/{path}", key) for path, key in EVERY_FILE[:2]])
+                         [(path.replace("Example_Manga_70982", "70982"), key) for path, key in EVERY_FILE[:2]])
+
+    def test_a_chapter_link_has_no_manga_title_so_it_files_under_the_id(self):
+        [first, *_] = collect(Mimi, "mht:chapter/1001", ctx=fake())
+        self.assertEqual(first.path, "70982/chapters/001_First_Chapter/001.webp")
+        self.assertEqual(first.post.fields["name"], "")
 
     def test_a_chapter_without_a_manga_keeps_its_own_folder_and_warns(self):
         info = {k: v for k, v in CHAPTERS[0].items() if k != "manga_id"}
@@ -201,13 +206,14 @@ class MangaTest(unittest.TestCase):
                 ctx = fake(**{"manga/70982": {**MANGA, **given}})
                 saved = collect(Mimi, "mht:70982", ctx=ctx, categories=["cover"])
                 self.assertEqual(dict(saved[0].post.fields),
-                                 {"title": "Example Manga", **fields})
+                                 {"title": "Example Manga", "name": "Example Manga", **fields})
 
     def test_a_cover_url_without_an_extension_is_named_from_its_content(self):
         ctx = fake(**{"manga/70982": {**MANGA, "cover_url": f"{CDN}/covers/70982"}})
         [saved] = collect(Mimi, "mht:70982", ctx=ctx, categories=["cover"])
-        self.assertEqual((saved.path, saved.key), ("cover/cover", "70982_cover"))
-        self.assertEqual(saved.path + sniff(b"RIFF\0\0\0\0WEBPVP8 "), "cover/cover.webp")
+        self.assertEqual((saved.path, saved.key), ("Example_Manga_70982/cover/cover", "70982_cover"))
+        self.assertEqual(saved.path + sniff(b"RIFF\0\0\0\0WEBPVP8 "),
+                         "Example_Manga_70982/cover/cover.webp")
 
     def test_a_missing_manga_or_chapter_is_not_found(self):
         for target, path in [("mht:70982", "manga/70982"),
@@ -351,8 +357,9 @@ class EngineTest(EngineCase):
             200, json={"items": [MANGA], "next_cursor": None})
         report = self.engine.download(["mht:author/7|chapters"])
         self.assertTrue(report.ok, report)
-        self.assertTrue((self.folder / "chapters" / "001_First_Chapter" / "001.webp").exists())
-        self.assertFalse((self.folder / "cover").exists())
+        named = self.target_dir("mht", "Example_Manga_70982")
+        self.assertTrue((named / "chapters" / "001_First_Chapter" / "001.webp").exists())
+        self.assertFalse((named / "cover").exists())
 
 if __name__ == "__main__":
     unittest.main()

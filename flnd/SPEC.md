@@ -511,8 +511,9 @@ makes a title of a caption: its first non-empty line, with `#tags`, `@names` and
 removed, whitespace squeezed to single spaces and trimmed ("" for nothing left).
 
 Plugin fields: `ins` `album title`; `thr` `title`; `twt` `part n title name`; `tik` `part album idx
-title`; `fbk` `part album`; `loi` `author title part`; `mht` `title order author genres chapters`;
-`smp` none; `pxv` `title user name`; `web` `name`; a plugin of your own declares its `fields`.
+title`; `fbk` `part album`; `loi` `author title part`; `mht` `title order author genres chapters
+name`; `smp` none; `pxv` `title user name`; `web` `name`; a plugin of your own declares its
+`fields`.
 
 Rendering: each `/` segment is filled alone. A missing or empty field drops the separators
 (`_ - space . : ,`) next to it, and a segment that comes out empty is left out, so `{date}_{target}`
@@ -1158,14 +1159,16 @@ up to 32.
 - **Categories:** `chapters`, `cover` (own). Not newest first: every chapter is listed, and the
   engine skips saved ones. A chapter is single; the finders pass categories on.
 - **Folder:** `chapters/{order} {title}` (`order` zero-padded to 3 digits when whole); `cover` for
-  `cover`. **Filename:** the plugin's (`001`, `cover`; the engine adds the extension). **Key:**
+  `cover`; all under `media/mht/{name}_{target}/`, `name` the manga's title (a chapter link's data
+  has none, so it files under its manga's kept folder, else under the id alone).
+  **Filename:** the plugin's (`001`, `cover`; the engine adds the extension). **Key:**
   `{post}_{num}` (`mht:<chapter id>_<n>`); `cover` keys `{post}_cover`.
 - **Login:** none: `flnd auth login mht` is `mht needs no login`.
 - **Limits and walls:** pace 0.5; no walls. Searches page by cursor and stop on a missing, empty or
   repeated cursor.
 - **Known gaps:** `chapters:<n>` is an exact count, checked on each result; negation works for
   genres only; `mht:<number>` is always a manga.
-- **Saved as:** `media/mht/1234567890/chapters/001_Example_Chapter/001.jpg`
+- **Saved as:** `media/mht/Example_Title_123/chapters/001_Example_Chapter/001.jpg`
 
 ### smp (SimpCity)
 
