@@ -804,8 +804,8 @@ class ApiTest(EngineCase):
 
         message = "tik:post/7312345678901234567 is one post, with no categories"
         engine = Engine(home=self.home, sources=PLUGINS)
-        for targets in (["tik:7312345678901234567|videos"],
-                        ["ins:example_user", "tik:7312345678901234567|all"]):
+        for targets in (["tik:post/7312345678901234567|videos"],
+                        ["ins:example_user", "tik:post/7312345678901234567|all"]):
             with self.subTest(targets=targets), self.assertRaisesRegex(UsageError, f"^{message}$"):
                 engine.download(targets)
         self.assertEqual(self.requests, [])

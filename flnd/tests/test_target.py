@@ -74,10 +74,9 @@ class AcceptedFormsTest(unittest.TestCase):
                     ("https://www.tiktok.com/@example_creator?lang=en", user),
             ("https://www.tiktok.com/@example_creator/video/7301234567890123456", video),
             ("https://www.tiktok.com/@example_creator/photo/7301234567890123456", video),
-            # A number of 16 or more digits is a video id; a shorter one is a name.
-            ("tik:7301234567890123456", video), ("tik:1234567890123456",
-                                                 Target("tik:post/1234567890123456", kind="post")),
-            ("tik:123456789012345", Target("tik:123456789012345", kind="user")),
+            # `tik:post/<id>` is a post; a bare number is a name.
+            ("tik:post/7301234567890123456", video),
+            ("tik:7301234567890123456", Target("tik:7301234567890123456", kind="user")),
         ])
 
     def test_loi(self):

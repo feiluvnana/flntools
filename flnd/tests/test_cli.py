@@ -213,7 +213,7 @@ class GetTest(RunsCase):
         self.assertEqual(self.runs, [])
 
     def test_a_mistake_is_a_usage_error_before_anything_starts(self):
-        for argv in (("ytb:nasa",), ("tik:7312345678901234567|videos",), ("ins:a|videos",),
+        for argv in (("ytb:nasa",), ("tik:post/7312345678901234567|videos",), ("ins:a|videos",),
                      ("ins:a", "--limit", "0"), ("ins:a", "--limit", "five"),
                      ("ins:a", "--when", "yesterday"), ("ins:a", "--nope"),
                      ("ins:a", "--exec", "no-such-program-here {path}"),

@@ -376,11 +376,10 @@ class TikTok(Plugin):
     filename = "{date}_{post}_{idx}"
     key = "{post}_{idx}"
 
-    # Before `user`, so a 16-digit id is never a user name; a link with no user is read too.
+    # A link with no user is read too.
     @route(*((pattern, "post/{id}") for pattern in (
-        r"tik:post/{id:\d+}", r"tik:{id:\d{16,}}", r"tiktok.com/*/video/{id:\d+}",
-        r"tiktok.com/*/photo/{id:\d+}", r"tiktok.com/video/{id:\d+}",
-        r"tiktok.com/photo/{id:\d+}")), single=True)
+        r"tik:post/{id:\d+}", r"tiktok.com/*/video/{id:\d+}", r"tiktok.com/*/photo/{id:\d+}",
+        r"tiktok.com/video/{id:\d+}", r"tiktok.com/photo/{id:\d+}")), single=True)
     async def post(self, ctx: Ctx, id: str) -> AsyncIterator[Post]:
         """One video or photo post, by its id: `tik:post/7301234567890123456`.
 

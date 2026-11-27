@@ -301,7 +301,6 @@ class ResolveTest(unittest.TestCase):
             ("twt:post/1790", R("twt", "post/1790", "post", ())),
             ("https://x.com/example_handle/status/1790", R("twt", "post/1790", "post", ())),
             ("tik:post/7301234567890123456", R("tik", "post/7301234567890123456", "post", ())),
-            ("tik:7301234567890123456", R("tik", "post/7301234567890123456", "post", ())),
             ("loi:12", R("loi", "12", "post", ("archive", "photo"))),
             ("loi:12|photo", N("loi", "12", "post", ("photo",))),
             ("loi:author/183", R("loi", "author/183", "author", ())),

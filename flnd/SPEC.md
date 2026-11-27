@@ -219,16 +219,17 @@ read), `intent`, `compose`, `login`; `x.com/` alone.
 **tik**
 
 - `tik:<user>`, `tiktok.com/@<user>`: the profile (route ``user``)
-- `tik:post/<id>` (so does the old `tik:<id>`, 16 digits or more), `tiktok.com/@<user>/video/<id>`
+- `tik:post/<id>`, `tiktok.com/@<user>/video/<id>`
   and `/photo/<id>`, `tiktok.com/video/<id>` and `/photo/<id>`: one post (route ``post``)
 - `vm.tiktok.com/<code>`, `vt.tiktok.com/<code>`, `tiktok.com/t/<code>`: one post, link only (route
   ``short``). It is opened in the browser and read from the video it lands on; a landing that is no
   video or photo post is `NotFound` with the hint `check the link in a browser; only video and photo
   links work`.
 
-`tik:123` (under 16 digits) is a user. Refused with `tik: <what> aren't supported; give a user or a
-post`: `tiktok.com/tag/...` (hashtag pages), `/music/...` (sound pages), `/discover/...`, `/live`,
-`/explore`, `/search...` (search pages). Also refused: `@@user`, any other `tiktok.com` link.
+`tik:<digits>` is a user name like any other. Refused with `tik: <what> aren't supported; give a
+user or a post`: `tiktok.com/tag/...` (hashtag pages), `/music/...` (sound pages),
+`/discover/...`, `/live`, `/explore`, `/search...` (search pages). Also refused: `@@user`, any
+other `tiktok.com` link.
 
 **fbk**
 

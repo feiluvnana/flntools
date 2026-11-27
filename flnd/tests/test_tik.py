@@ -215,8 +215,8 @@ class RoutesTest(unittest.TestCase):
             ("https://www.tiktok.com/@example_creator/video/abc", ("user", "example_creator")),
             ("https://www.tiktok.com/@example_creator/x/7301234567890123456",
              ("user", "example_creator")),
-            ("tik:7301234567890123456", ("post", "post/7301234567890123456")),
-            ("tik:1234567890123456", ("post", "post/1234567890123456")),
+            ("tik:post/7301234567890123456", ("post", "post/7301234567890123456")),
+            ("tik:7301234567890123456", ("user", "7301234567890123456")),
             (f"https://www.tiktok.com/@example_creator/photo/{VIDEO}", ("post", f"post/{VIDEO}")),
             (f"https://www.tiktok.com/@example_creator/video/{VIDEO}/?lang=en",
              ("post", f"post/{VIDEO}")),
@@ -278,7 +278,7 @@ class NamesAndKeysTest(unittest.TestCase):
         for item, expected in EMBEDS.values():
             with self.subTest(post=item["id"]):
                 ctx = embedded(item)
-                self.assertEqual(pairs(collect(TikTok, f"tik:{item['id']}", ctx=ctx)), expected)
+                self.assertEqual(pairs(collect(TikTok, f"tik:post/{item['id']}", ctx=ctx)), expected)
 
     def test_a_post_link_is_filed_by_its_creator_and_kind(self):
         link, creator = f"{API}/@example_creator/video/{VIDEO}", {"author": {"uniqueId": "me"}}
@@ -319,7 +319,7 @@ class EmbedTest(unittest.TestCase):
                               ({"sessionid": "s", "tt_chain_token": "t"},
                                "tt_chain_token=t; sessionid=s")):
             with self.subTest(cookies=cookies):
-                saved = collect(TikTok, f"tik:{VIDEO}", ctx=embedded(item, cookies=cookies))
+                saved = collect(TikTok, f"tik:post/{VIDEO}", ctx=embedded(item, cookies=cookies))
                 headers = dict(saved[0].post.headers)
                 self.assertEqual(headers.pop("Cookie", None), sent)
                 self.assertEqual(headers, {"Referer": f"{API}/"})
@@ -333,13 +333,13 @@ class EmbedTest(unittest.TestCase):
             with self.subTest(status=reply.status):
                 ctx = FakeCtx(TikTok, routes={f"{API}/embed/v2/{VIDEO}": reply})
                 with self.assertRaises(error) as raised:
-                    collect(TikTok, f"tik:{VIDEO}", ctx=ctx)
+                    collect(TikTok, f"tik:post/{VIDEO}", ctx=ctx)
                 self.assertIs(type(raised.exception), error)
 
     def test_refresh_is_one_embed_fetch_for_the_file(self):
         item = photo(VIDEO, f"{CDN}/new1", f"{CDN}/new2", createTime=1700000000)
         ctx = embedded(item)
-        stale = collect(TikTok, f"tik:{VIDEO}", ctx=embedded(item))[1].post
+        stale = collect(TikTok, f"tik:post/{VIDEO}", ctx=embedded(item))[1].post
         fresh = asyncio.run(TikTok().refresh(ctx, stale))
         self.assertEqual([file.url for file in fresh.files], [f"{CDN}/new2"])
         self.assertEqual(len(ctx.seen.requests), 1)
