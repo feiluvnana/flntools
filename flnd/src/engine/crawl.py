@@ -28,6 +28,7 @@ from collections.abc import (
 from dataclasses import dataclass, field, replace
 from enum import Enum
 from pathlib import Path, PurePosixPath
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, TypeVar
 from urllib.parse import urlsplit
 
@@ -1913,6 +1914,15 @@ class _Stops:
         return _Stops(True, self.raw)
 
     @property
+    def record(self) -> Mapping[str, Any] | None:
+        """The head as a read-only `{"id", "ts"}` mapping for a plugin; None with no head."""
+        if isinstance(self.raw, str):
+            return MappingProxyType({"id": self.raw})
+        if isinstance(self.raw, dict) and self.id is not None:
+            return MappingProxyType(dict(self.raw))
+        return None
+
+    @property
     def known(self) -> bool:
         """Whether an earlier run stored a head."""
         return self.id is not None
@@ -2137,7 +2147,8 @@ async def _list_one(
                      name=name or target.kind)
             down = stops.syncing()
             ended, extra, newest = await _listed(
-                work, site, name, True, items, Listing(head=down.id, sync=True), down,
+                work, site, name, True, items,
+                Listing(head=down.id, sync=True, stored=down.record if name else None), down,
                 options, rest)
             taken += extra
             if ended in (Ended.RAN_OUT, Ended.CAUGHT_UP) and newest.head is not None:
@@ -2161,7 +2172,8 @@ async def _sync_one(
     head. The head moves only when the pass reaches it or the end; a pass cut short, or failed,
     leaves it, so the next one reads down to it again (the saved posts cost no request)."""
     listing = progress.listings[name] = Listing(
-        None, label=f"{target}: {name or target.kind}", head=stops.id, sync=True)
+        None, label=f"{target}: {name or target.kind}", head=stops.id, sync=True,
+        stored=stops.record if name else None)
     work.ledger.tally.start(target, name, listing)
     try:
         ended, taken, kept = await _listed(work, site, name, True, items, listing, stops,

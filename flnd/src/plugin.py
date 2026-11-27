@@ -1160,6 +1160,17 @@ class Ctx(Protocol):
         ...
 
     @property
+    def head(self) -> Mapping[str, Any] | None:
+        """The head the crawl kept for the category being listed, as a read-only `{"id", "ts"}`.
+
+        Only during a sync of a `newest_first` category, so a plugin may ask its site for
+        less: posts at or older than the head are old. None on a first read, with `--again`,
+        for a category that isn't `newest_first`, on a single route, and outside a listing.
+        The engine's own stop rule still decides where the listing ends.
+        """
+        ...
+
+    @property
     def time(self) -> Clock:
         """The run's clock."""
         ...

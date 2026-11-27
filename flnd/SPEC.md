@@ -607,7 +607,10 @@ early. What a run skips and where it stops:
   4 old posts in a row; a new post resets the count, and a post marked `pinned` is skipped. No pin
   mark is trusted: 4 is above every site's pin limit (ins 3, tik 3, twt 1, thr 1). A head with no
   time (an older home kept the bare id) takes the time of its post when the pass meets it; if that
-  post is gone, the listing is read whole once. A listing with
+  post is gone, the listing is read whole once. A plugin may read that head as `ctx.head`, a
+  read-only mapping, to ask its site for less; it is None on a first read, with `--again`, for a
+  category that isn't newest first, on a single route, and outside a category's listing. The
+  stop rule above still decides where the listing ends. A listing with
   nothing new is one request when the site pages by cursor (`Skipped`, reason `nothing new`). A
   search keeps the key of its first target as its head, and a sync stops at it (`--when` goes on to
   the search)
@@ -1190,5 +1193,6 @@ A built-in is one module of `src/plugins/`, named by its code, that imports only
 the standard library (its SDK inside a function). Add a row to `TABLE` in `src/plugins/__init__.py`
 (code, module, class, domains), so `--help` and the link resolver find it without importing it.
 Its tests run on `tests/plugin_kit.py`: `FakeCtx` stands in for the run's context, `FakePage` and
-`Reply` for pages and answers, and `collect` runs a route to its posts. Then give it a section under
+`Reply` for pages and answers, and `collect` runs a route to its posts (`FakeCtx(head=...)` fakes
+`ctx.head`). Then give it a section under
 [Plugins](#plugins), headed by its code.

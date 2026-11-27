@@ -56,6 +56,8 @@ class FeedCase(EngineCase):
         self.listings = 0
         # A token each file URL carries as well, once set, as a CDN's signed URLs do.
         self.signed = ""
+        # What `ctx.head` gave each listing of `posts`, in order.
+        self.heads = []
         self.source = self.feed_source()
         self.routes[f"{API}/feed"] = self.page
         self.engine = Engine(home=self.home, sources={"fed": self.source}, emit=self.events.append)
@@ -69,6 +71,7 @@ class FeedCase(EngineCase):
 
         async def posts(self, ctx, user):
             test.listings += 1
+            test.heads.append(ctx.head)
             sig = f"s{test.listings}" + (f"&token={test.signed}" if test.signed else "")
             async for response in ctx.pages(f"{API}/feed", cursor="next", send="after"):
                 for post_id in response.json["ids"]:
@@ -117,6 +120,44 @@ class FeedCase(EngineCase):
 
     def row(self):
         return fakes.targets(self.home)["fed:example_user"]
+
+
+# ---------------------------------------------------------------------------------------------
+# What a plugin sees of the head
+# ---------------------------------------------------------------------------------------------
+
+class CtxHeadTest(FeedCase):
+    def test_a_newest_first_category_sees_none_then_its_head_on_a_sync(self):
+        self.assertTrue(self.download().ok)
+        self.assertEqual(self.heads, [None])
+        self.assertTrue(self.sync().ok)
+        self.assertEqual(len(self.heads), 2)
+        head = self.heads[1]
+        self.assertEqual(head["id"], "p1")
+        self.assertIn("ts", head)
+        with self.assertRaises(TypeError):
+            head["id"] = "x"
+
+    def test_again_sees_none(self):
+        self.assertTrue(self.download().ok)
+        self.assertTrue(
+            self.engine.download(["fed:example_user|all"], sync=True, again=True).ok)
+        self.assertEqual(self.heads, [None, None])
+
+    def test_a_category_that_is_not_newest_first_sees_none(self):
+        seen = []
+
+        async def info(plugin, ctx, user):
+            seen.append(ctx.head)
+            yield Post("s1", [File(f"{CDN}/s1.jpg")], date=DAY)
+
+        self.source = self.feed_source(info=info)
+        self.engine = Engine(home=self.home, sources={"fed": self.source}, emit=self.events.append)
+        self.assertTrue(self.download().ok)
+        self.assertTrue(self.sync().ok)
+        self.assertEqual(seen, [None, None])
+        self.assertEqual(self.heads[0], None)
+        self.assertEqual(self.heads[1]["id"], "p1")
 
 
 # ---------------------------------------------------------------------------------------------

@@ -367,6 +367,16 @@ class FakeCtxTest(unittest.TestCase):
             with self.subTest(label), self.assertRaises(UsageError):
                 run(ctx.ask("Pick", choices=choices))
 
+    def test_head_passes_through_read_only_and_is_none_by_default(self):
+        self.assertIsNone(FakeCtx(Gallery).head)
+        given = {"id": "p1", "ts": 1767312000}
+        head = FakeCtx(Gallery, head=given).head
+        self.assertEqual(head, given)
+        with self.assertRaises(TypeError):
+            head["id"] = "p2"
+        given["id"] = "p3"
+        self.assertEqual(head["id"], "p1")
+
     def test_state_settings_and_secrets_keep_the_contract(self):
         state = {}
         ctx = FakeCtx(Gallery, state=state, settings={"height": 1080}, answers=["123456"])

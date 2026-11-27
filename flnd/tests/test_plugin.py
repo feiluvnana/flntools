@@ -547,7 +547,7 @@ class HooksTest(unittest.TestCase):
         self.assertEqual(members, {
             "fetch", "pages", "open", "feed", "load", "document", "warm", "click", "shown",
             "handoff", "pause", "hold", "call", "ask", "log", "target",
-            "when", "time", "settings", "cookies", "state", "secrets", "request"})
+            "when", "head", "time", "settings", "cookies", "state", "secrets", "request"})
         self.assertEqual(str(inspect.signature(Ctx.pages)),
                          "(self, request: 'str | Request', *, cursor: 'str | Callable[[Response], "
                          "str | None]', send: 'str | Callable[[str], "

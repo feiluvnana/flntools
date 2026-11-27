@@ -205,6 +205,7 @@ class FakeCtx:
         answers: what `ask` answers, in order.
         state: the plugin's saved state, shared by contexts given the same dict.
         settings: the plugin's `Settings` fields that differ from their defaults.
+        head: what `ctx.head` gives, a category's stored head; None (the default) is none.
 
     Raises:
         UsageError: `settings` names a field the plugin's `Settings` lacks.
@@ -216,7 +217,8 @@ class FakeCtx:
                  cookies: Mapping[str, str] | None = None,
                  when: flnd.plugin.Range = flnd.plugin.Range(), answers: Sequence[str] = (),
                  state: MutableMapping[str, Any] | None = None,
-                 settings: Mapping[str, Any] | None = None) -> None:
+                 settings: Mapping[str, Any] | None = None,
+                 head: Mapping[str, Any] | None = None) -> None:
         if isinstance(plugin, type) and issubclass(plugin, Plugin):
             plugin = plugin()
         if not isinstance(plugin, Plugin) or not getattr(plugin, "code", None):
@@ -229,6 +231,7 @@ class FakeCtx:
         self._routes, self._pages = dict(routes or {}), dict(pages or {})
         self._cookies = MappingProxyType(dict(cookies or {}))
         self._when = when
+        self._head = MappingProxyType(dict(head)) if head is not None else None
         self._answers = deque(answers)
         self._state = flnd.engine.ctx.JsonState(state if state is not None else {})
         self._secrets = _secrets(plugin)
@@ -512,6 +515,11 @@ class FakeCtx:
     def when(self) -> flnd.plugin.Range:
         """The run's `when`, as given."""
         return self._when
+
+    @property
+    def head(self) -> Mapping[str, Any] | None:
+        """The head given to `FakeCtx(head=...)`, read-only; None by default."""
+        return self._head
 
     @property
     def time(self) -> flnd.plugin.Clock:

@@ -759,6 +759,10 @@ class Ctx:
         return self._when
 
     @property
+    def head(self) -> Mapping[str, Any] | None:
+        return self.listing.stored if self.listing is not None else None
+
+    @property
     def time(self) -> Time:
         return Time()
 
@@ -1538,6 +1542,7 @@ class Listing:
     Args:
         start: the cursor an interrupted run saved; None starts from the newest.
         label: names the listing in the line that says a saved cursor was refused.
+        stored: the head record of a synced category, which `Ctx.head` gives the plugin.
 
     Example:
         >>> listing = Listing("c42", label="exm:example_user: posts")
@@ -1546,8 +1551,11 @@ class Listing:
     """
 
     def __init__(self, start: str | None = None, *, label: str = "",
-                 head: str | None = None, sync: bool = False) -> None:
+                 head: str | None = None, sync: bool = False,
+                 stored: Mapping[str, Any] | None = None) -> None:
         self.start = start
+        # The stored head record a plugin reads as `Ctx.head`; None unless a category syncs.
+        self.stored = stored
         self.label = label
         self.head = head
         self.sync = sync
