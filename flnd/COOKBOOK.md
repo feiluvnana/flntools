@@ -140,3 +140,16 @@ its target.
 
 More: [check and repair](SPEC.md#check-and-repair),
 [When it goes wrong](SPEC.md#when-it-goes-wrong), [Sync](SPEC.md#sync).
+
+## Update an older home
+
+Goal: a command said `is a v1 home; run flnd migrate`.
+
+```sh
+flnd migrate --dry
+flnd migrate
+```
+
+`--dry` shows what changes and writes nothing; `flnd migrate` backs up `flnd.db` first.
+
+More: [Migrating a home](SPEC.md#migrating-a-home).

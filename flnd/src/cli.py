@@ -436,6 +436,24 @@ def status(args: argparse.Namespace) -> int:
     return OK if well else FAILED
 
 
+def migrate(args: argparse.Namespace) -> int:
+    """Bring an older home up to date: back up flnd.db, then run each step, offline.
+
+    --dry says what each step would change, and writes nothing.
+
+    Args:
+        args: the parsed flags.
+
+    Returns:
+        0.
+    """
+    with _open(args) as fl:
+        lines = fl.migrate(dry=args.dry)
+    for line in lines:
+        _line(line)
+    return OK
+
+
 def config(args: argparse.Namespace) -> int:
     """Show every setting of config.toml: its value, its default and where it comes from.
 
@@ -631,6 +649,9 @@ def parser() -> argparse.ArgumentParser:
     sub = command(verbs, "status", status)
     sub.add_argument("--fix", action="store_true",
                      help="repair the history rows of missing or resized files, without asking")
+    sub = command(verbs, "migrate", migrate)
+    sub.add_argument("--dry", action="store_true",
+                     help="say what each step would change, and write nothing")
     command(verbs, "config", config)
     return top
 

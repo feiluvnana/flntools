@@ -1,4 +1,4 @@
-"""src/engine/store.py: `flnd.db` schema 5, old and newer schema refusal, its pragmas, the busy
+"""src/engine/store.py: `flnd.db` schema 2, old and newer schema refusal, its pragmas, the busy
 signal, and `check`.
 """
 
@@ -73,7 +73,7 @@ class StoreCase(unittest.TestCase):
 
 class SchemaTest(StoreCase):
     def test_an_old_home_is_refused_and_left_as_it_is(self):
-        for version in (None, "2", "3", "4"):
+        for version in (None, "1", "3", "4"):
             with self.subTest(version=version):
                 self.v1()
                 if version is not None:

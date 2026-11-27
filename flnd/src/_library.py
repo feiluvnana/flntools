@@ -280,6 +280,27 @@ class Flnd:
         with self._locked() if fix else nullcontext(), store.open(self.home) as db:
             return store.check(self.home, db, fix=fix)
 
+    def migrate(self, *, dry: bool = False) -> list[str]:
+        """Bring the home up to the newest version (SPEC.md#migrating-a-home).
+
+        `flnd.db` is backed up first, to `flnd.db.v<old>.bak`. It never touches the network.
+
+        Args:
+            dry: say what each step would change, and write nothing (the lock isn't taken).
+
+        Returns:
+            One line per step (`v1 → v2: ...`), or `<home> is already v2`.
+
+        Raises:
+            UsageError: the home is too old for the steps, or from a newer flnd, or another
+                run is using it.
+            DiskError: `flnd.db` can't be read or written.
+        """
+        from flnd.engine import migrate, store
+
+        with self._locked() if not dry and (self.home / store.DB).is_file() else nullcontext():
+            return migrate.run(self.home, dry=dry)
+
     # -----------------------------------------------------------------------------------------
     # Helpers
     # -----------------------------------------------------------------------------------------

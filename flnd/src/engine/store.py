@@ -1,4 +1,4 @@
-"""`flnd.db`, schema 5: its tables, its rows and queries, and `check`, which compares the rows with
+"""`flnd.db`, schema 2: its tables, its rows and queries, and `check`, which compares the rows with
 the disk and repairs them. SPEC.md#for-developers explains it.
 """
 
@@ -36,10 +36,14 @@ __all__ = ["FailureRow", "FileRow", "RunRow", "State", "Store", "TargetRow",
 
 MEDIA, METADATA = Path("media"), Path("metadata")
 DB = METADATA / "flnd.db"
-VERSION = "5"
+# One number for the home and its `flnd.db`. Version 1 is what flnd wrote while it counted
+# "5"; only `flnd migrate` reads that. "1", "3" and "4" are older values, never read.
+VERSION = "2"
+V1 = "5"
+UNREADABLE = ("1", "3", "4")
 
 SCHEMA = """
-CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) WITHOUT ROWID;  -- version = '5'
+CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) WITHOUT ROWID;  -- version = '2'
 CREATE TABLE files (
     key TEXT PRIMARY KEY, target TEXT NOT NULL, plugin TEXT NOT NULL,
     post_id TEXT NOT NULL DEFAULT '', category TEXT NOT NULL DEFAULT '', path TEXT NOT NULL,
@@ -283,22 +287,20 @@ def open(home: Path, *, loop: bool = False) -> Store:
 
 
 def _setup(sql: sqlite3.Connection, *, home: Path, loop: bool) -> None:
-    """Set the pragmas, then make schema 5 or check an existing home, in one transaction."""
+    """Set the pragmas, then make schema 2 or check an existing home, in one transaction."""
     sql.execute(f"PRAGMA busy_timeout = {OTHER_BUSY_MS}")
     sql.execute(f"PRAGMA cache_size = -{CACHE_KIB}")
     sql.execute(f"PRAGMA wal_autocheckpoint = {0 if loop else OTHER_CHECKPOINT_PAGES}")
     sql.execute("BEGIN IMMEDIATE")
     try:
-        version = _version(sql)
-        if version is None:
+        found = stored(sql)
+        if found is None:
             for statement in STATEMENTS:
                 sql.execute(statement)
             sql.execute("INSERT INTO meta VALUES ('version', ?)", (VERSION,))
-        elif version != VERSION:
-            if version.isdigit() and int(version) < int(VERSION):
-                raise UsageError(f"{home} is from an old flnd; start a new home")
-            raise UsageError(f"home schema {version!r} needs a newer flnd",
-                             hint="upgrade flnd, or open the home with the flnd that wrote it")
+        elif found != VERSION:
+            raise UsageError(f"{home} is a v{number(home, found)} home; run flnd migrate",
+                             hint="flnd migrate --dry shows what changes")
         sql.execute("COMMIT")
     except BaseException:
         if sql.in_transaction:
@@ -308,7 +310,23 @@ def _setup(sql: sqlite3.Connection, *, home: Path, loop: bool) -> None:
         sql.execute(f"PRAGMA busy_timeout = {LOOP_BUSY_MS}")
 
 
-def _version(sql: sqlite3.Connection) -> str | None:
+def number(home: Path, value: str) -> int:
+    """A stored version value as its number, version 1 being `V1`'s "5".
+
+    Raises:
+        UsageError: the value is an old one, or a newer flnd's.
+    """
+    if value == V1:
+        return 1
+    if value.isdigit() and value not in UNREADABLE and 2 <= int(value) <= int(VERSION):
+        return int(value)
+    if value in UNREADABLE:
+        raise UsageError(f"{home} is from an old flnd; start a new home")
+    raise UsageError(f"home schema {value!r} needs a newer flnd",
+                     hint="upgrade flnd, or open the home with the flnd that wrote it")
+
+
+def stored(sql: sqlite3.Connection) -> str | None:
     """The file's schema version; None for an empty file, "1" for a version-1 one without it."""
     tables = _tables(sql)
     if not tables:
