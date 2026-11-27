@@ -1109,6 +1109,9 @@ class Engine:
             followed = {item: row for item, row in rows.items() if row.follow}
             targets = [Chosen(target, rows[store.key(target)].categories or None)
                        for target in self._recorded(followed)]
+        stored = {item: row.folder for item, row in rows.items() if row.folder}
+        config.check_folder(None, self.sources, [one for one in targets
+                                                 if self._is_search(one.target)], stored=stored)
         planned = []
         for target, categories, link in targets:
             row = rows.get(store.key(target))

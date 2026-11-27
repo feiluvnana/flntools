@@ -577,6 +577,13 @@ class SearchFolderTest(LibraryCase):
         self.fl.get("exq?words").wait()
         self.fl.get("exq?words", folder="{query}/{category}").wait()
 
+    def test_a_followed_search_without_its_folder_is_refused_on_sync(self):
+        self.fl.get("exq?words", folder="{query}").wait()
+        with sqlite3.connect(self.home / _store.DB) as sql:
+            sql.execute("UPDATE targets SET folder = NULL WHERE key = 'exq:words'")
+        with self.assertRaisesRegex(errors.UsageError, r"exq\?words: a search needs --folder"):
+            self.fl.sync().wait()
+
     def test_another_folder_is_refused_for_a_followed_search_unless_again(self):
         self.fl.get("exq?words", folder="one/{category}").wait()
         with self.assertRaisesRegex(errors.UsageError, "saved under --folder 'one/{category}'"):

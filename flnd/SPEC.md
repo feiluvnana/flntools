@@ -618,8 +618,8 @@ twt?cats: this search is saved under --folder '{query}', not 'other'
 hint: add --again to use the new folder; files already saved stay where they are
 ```
 
-A followed search from before it kept a folder has none, and syncs as it did. `mht:author/...` is
-not a search, and needs no folder.
+A followed search always has its folder; a sync of one without it is refused like an unsaved
+search (`a search needs --folder`). `mht:author/...` is not a search, and needs no folder.
 
 ### Names and keys in `config.toml`
 
