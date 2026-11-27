@@ -1232,15 +1232,21 @@ up to 32.
   work; the engine keeps the root the first save gave, so a rename on pixiv never moves a folder
   (see [`root`](#root)). No request reads the name apart from the works.
 - **Folder:** `{category}`, under `media/pxv/<name>_<user id>/`. **Filename:**
-  `{date}_{post}_p{num}`
-  (`p<num>` is pixiv's own page number); a novel's files set their own names (see Novels).
+  `{date}_{title:.40}_{post}_p{num}`
+  (`title` is the work's own title; `p<num>` is pixiv's own page number); a novel's files set
+  their own names (see Novels).
 - **Ugoira:** one `File.frames(originalSrc, frames, keep=...)`, so the video is
-  `<date>_<post>_p0.mp4`. It needs ffmpeg, as DASH does (a missing one is a `ToolError`). Setting
+  `<date>_<title>_<post>_p0.mp4`. It needs ffmpeg, as DASH does (a missing one is a
+  `ToolError`). Setting
   `ugoira` under `[plugins.pxv]`: `"both"` (the default) keeps the zip beside the video as
-  `<date>_<post>_p0.zip` and adds `<date>_<post>_p0.json` (`File.text`: `mime_type` and the
+  `<date>_<title>_<post>_p0.zip` and adds `<date>_<title>_<post>_p0.json` (`File.text`:
+  `mime_type` and the
   `frames` as pixiv gave them); `"mp4"` saves the video alone. Any other value warns once and
-  is read as `"both"`. An undated post has no `<date>_`.
-- **Novels:** a post's files are the text `<date>_<post>.md` (`File.text`), the cover, then each
+  is read as `"both"`. An undated post has no `<date>_`. The `.json`'s name is made by the
+  plugin with the engine's own rules (the title cut to 40 characters, then the name cleaned as
+  `flnkit.text.filename` cleans), and a test checks it against the engine's.
+- **Novels:** a post's files are the text `<date>_<title>_<post>.md` (`File.text`), the cover,
+  then each
   image. The `.md` starts with `# <title>`, then lines `- Author: https://www.pixiv.net/users/<id>`,
   `- Date: <day>`, `- Series: <title>, no. <order>` (only with a series), `- Tags: a, b` (only
   with tags) and the caption (`<br>` as newlines, other tags dropped), then `---` and the text.
@@ -1251,11 +1257,15 @@ up to 32.
   `[uploadedimage:<id>]` (from `textEmbeddedImages`) and `[pixivimage:<illust>-<page>]` (`<illust>`
   alone is page 1) are `![](<image name>)`. Anything else stays as written, and so does an image
   that is not visible or has no original, with a `warn` log. An image is
-  `<date>_<post>_<n><extension of its URL>`, `n` from 1 in text order over the images that
+  `<date>_<title>_<post>_<n><extension of its URL>`, `n` from 1 in text order over the images that
   resolved, each distinct image once. A cover that is an `i.pximg.net` `novel-cover-master` image
   is saved as its original (the `/c/<size>/` part removed, `novel-cover-original`,
-  `_master1200` dropped) with `File(mirrors=[.jpg, .png])`, named `<date>_<post>_cover`; any other
-  cover (pixiv's default image) is not saved. An undated novel has no `<date>_`. A novel's answer
+  `_master1200` dropped) with `File(mirrors=[.jpg, .png])`,
+  named `<date>_<title>_<post>_cover`; any other
+  cover (pixiv's default image) is not saved. An undated novel has no `<date>_`, and one with no
+  title has no `<title>_`. The title is cut to 40 characters and cleaned as the engine cleans
+  a name, so the engine leaves every name as the plugin set it; in the Markdown a name's
+  `( ) [ ] < > # %` and spaces are percent-escaped. A novel's answer
   with no `content` is `Changed`.
 - **Key:** `{post}_{num}`; a novel's is `novel_{post}_{num}`, since artwork and novel ids are two
   number series. **Fields:** `title`, `user` (the work's artist's display name), `name` (the
@@ -1290,9 +1300,11 @@ up to 32.
   are not targets. A work edited later isn't seen by a
   sync; a user's private works are never listed. Answer shapes beyond the live checks are
   unverified.
-- **Saved as:** `media/pxv/example_user_12345678/illusts/2026-01-02_123456789_p0.png`,
-  `media/pxv/example_user_12345678/ugoira/2026-01-02_123456790_p0.mp4` (with `.zip` and `.json`),
-  `media/pxv/example_user_12345678/novels/2026-01-02_23456789.md` (with `_cover.jpg` and `_1.png`)
+- **Saved as:** `media/pxv/example_user_12345678/illusts/2026-01-02_Sunset_123456789_p0.png`,
+  `media/pxv/example_user_12345678/ugoira/2026-01-02_Waves_123456790_p0.mp4`
+  (with `.zip` and `.json`),
+  `media/pxv/example_user_12345678/novels/2026-01-02_Example_Story_23456789.md`
+  (with `_cover.jpg` and `_1.png`)
 
 ### web (the web)
 

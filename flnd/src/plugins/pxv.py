@@ -11,6 +11,7 @@ import html
 import json
 import random
 import re
+import unicodedata
 from collections.abc import AsyncIterator, Mapping, Sequence
 from pathlib import PurePosixPath
 from typing import Any
@@ -58,6 +59,9 @@ BATCH = 100
 # What pixiv shows in a work's thumbnail when the login may not see it: `limit_<why>_<size>`.
 LIMIT = re.compile(r"//s\.pximg\.net/common/images/limit_([a-z_]+?)(?:_\d+)?\.\w+")
 LIMIT_HINTS = {"sanity_level": SANITY_HINT, "mypixiv": FRIENDS_HINT}
+# What the engine's filename cleaner replaces, and the runs it squeezes to one `_`.
+UNSAFE = re.compile(r'[\\/*?:"<>|\x00-\x1f\x7f-\x9f]')
+SEPARATORS = re.compile(r"[\s_]+")
 # What a user's number must be, as a page's user is only ever its number.
 NAME = re.compile(r"@?[\w.-]+")
 # The illustType each own category yields, and the kind of list it reads in `profile/all`.
@@ -105,7 +109,7 @@ class Pixiv(Plugin):
     # name the first save gave.
     root = "{name}_{target}"
     folder = "{category}"
-    filename = "{date}_{post}_p{num}"
+    filename = "{date}_{title:.40}_{post}_p{num}"
     key = "{post}_{num}"
     fields = ("title", "user", "name")
     unsupported = _refused()
@@ -179,7 +183,8 @@ class Pixiv(Plugin):
             ctx.log("warn", "pxv: work {id} is of an unknown type, {kind}", id=id, kind=kind)
             return
         if kind == 2:
-            files: Any = functools.partial(self._ugoira, ctx, id, _stamp(body.get("createDate")))
+            files: Any = functools.partial(self._ugoira, ctx, id, _stamp(body.get("createDate")),
+                                      str(body.get("title") or ""))
         elif body.get("pageCount") == 1 and isinstance(urls.get("original"), str):
             files = (File(_image(id, urls["original"])),)
         else:
@@ -285,7 +290,9 @@ class Pixiv(Plugin):
                     yield _post(id, work, functools.partial(self._novel, ctx, id, work),
                                 date=made)
                 elif work.get("illustType") == kind:
-                    files = (functools.partial(self._ugoira, ctx, id, made, work) if kind == 2
+                    files = (functools.partial(self._ugoira, ctx, id, made,
+                                               str(work.get("title") or ""), work)
+                             if kind == 2
                              else functools.partial(self._pages, ctx, id, work))
                     yield _post(id, work, files, date=made)
             # Ids are in upload order, so once a whole batch is older than the head, so is every
@@ -326,7 +333,7 @@ class Pixiv(Plugin):
         if body is None:
             body = _novel_body(id, await self.ajax(ctx, f"novel/{id}", f"novel {id}"))
         made = _stamp(body.get("createDate"))
-        stem = f"{_day(made)}_{id}" if made is not None else id
+        stem = _stem(made, body.get("title"), id)
         text = body["content"]
         embedded = body.get("textEmbeddedImages")
         found = _urls(embedded if isinstance(embedded, dict) else {})
@@ -357,7 +364,7 @@ class Pixiv(Plugin):
             files.append(File(mirrors=cover, name=f"{stem}_cover"))
         return files + images
 
-    async def _ugoira(self, ctx: Ctx, id: str, date: int | None,
+    async def _ugoira(self, ctx: Ctx, id: str, date: int | None, title: str,
                       work: Mapping[str, Any] | None = None) -> list[File]:
         """One animation's files, one request: the MP4 made from the frames' zip, and with the
         setting `both` the zip beside it and a `.json` of the frames named like the video."""
@@ -386,7 +393,7 @@ class Pixiv(Plugin):
         video = File.frames(_image(id, zipped or body["src"]), delays, keep=both)
         if not both:
             return [video]
-        stem = f"{_day(date)}_{id}_p0" if date is not None else f"{id}_p0"
+        stem = _stem(date, title, id, "_p0")
         info = json.dumps({"mime_type": body.get("mime_type"), "frames": frames}, indent=2)
         return [video, File.text(f"{stem}.json", info)]
 
@@ -601,6 +608,22 @@ def _day(seconds: int) -> str:
     return datetime.datetime.fromtimestamp(seconds, datetime.UTC).date().isoformat()
 
 
+def _stem(date: int | None, title: Any, id: str, tail: str = "") -> str:
+    """A file's stem as the template `{date}_{title:.40}_{post}` makes it, for the files the
+    plugin names itself (a novel's, an ugoira's `.json`). It is cleaned as the engine's cleaner
+    (`flnkit.text.filename`) cleans, so that one leaves it unchanged and it matches the video's."""
+    day = _day(date) if date is not None else ""
+    raw = f"{day}_{str(title or '')[:40]}_{id}{tail}"
+    raw = "".join(char for char in raw if unicodedata.category(char) != "Cf")
+    cleaned = SEPARATORS.sub("_", UNSAFE.sub("_", raw)).strip("._ ")
+    return cleaned.encode("utf-8")[:200].decode("utf-8", "ignore").strip("._ ")
+
+
+def _link(name: str) -> str:
+    """A file name as a Markdown link target: characters that end or split one are escaped."""
+    return re.sub(r"[()<>%#\[\] ]", lambda found: f"%{ord(found[0]):02X}", name)
+
+
 def _older(newest: int, head: Mapping[str, Any] | None) -> bool:
     """Whether a time is strictly older than the sync head's, by its Unix seconds or its day."""
     when = head.get("ts") if head else None
@@ -752,7 +775,7 @@ def _novel_text(body: Mapping[str, Any], names: Mapping[str, str], made: int | N
         if found["jump"] is not None:
             return f"(page {found['jump']})"
         tag = _tag(found["image"][1:-1])
-        return f"![]({names[tag]})" if tag in names else found["image"]
+        return f"![]({_link(names[tag])})" if tag in names else found["image"]
 
     head = [f"# {body.get('title') or ''}", ""]
     if body.get("userId"):

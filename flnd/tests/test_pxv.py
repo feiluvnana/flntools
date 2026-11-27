@@ -11,7 +11,8 @@ from plugin_kit import FakeCtx, FakePage, Reply, check, collect
 
 from flnd.errors import Blocked, Changed, Hidden, LoginError, NotFound
 from flnd.plugin import Post, Target, UsageError
-from flnd.plugins.pxv import Pixiv
+from flnd.plugins.pxv import Pixiv, _stem
+from flnkit import text as flntext
 
 SITE = "https://www.pixiv.net"
 AJAX = f"{SITE}/ajax"
@@ -165,7 +166,7 @@ class FormsTest(unittest.TestCase):
         self.assertFalse(Pixiv.login.required)
         self.assertEqual(dict(Pixiv.limits), {"i.pximg.net": 4})
         self.assertEqual((Pixiv.pace, Pixiv.folder, Pixiv.filename, Pixiv.key, Pixiv.fields),
-                         (2.0, "{category}", "{date}_{post}_p{num}", "{post}_{num}",
+                         (2.0, "{category}", "{date}_{title:.40}_{post}_p{num}", "{post}_{num}",
                           ("title", "user", "name")))
 
 
@@ -231,8 +232,8 @@ class ReaderTest(unittest.TestCase):
             f"{AJAX}/illust/5/pages": pages(5, 2)})
         found = collect(Pixiv, f"pxv:{USER}", ctx=ctx)
         self.assertEqual([(f.path, f.key) for f in found],
-                         [("Example_12345678/illusts/2026-01-02_5_p0.png", "5_0"),
-                          ("Example_12345678/illusts/2026-01-02_5_p1.png", "5_1")])
+                         [("Example_12345678/illusts/2026-01-02_title_5_5_p0.png", "5_0"),
+                          ("Example_12345678/illusts/2026-01-02_title_5_5_p1.png", "5_1")])
 
     def test_requests_carry_the_referer_and_accept_headers(self):
         ctx = user_ctx(illusts=(5,), works={"5": work(5)})
@@ -301,7 +302,7 @@ class SingleTest(unittest.TestCase):
         ctx = self.single()
         (one,) = collect(Pixiv, "pxv:artwork/5", ctx=ctx)
         self.assertEqual((one.url, one.path, one.key, one.post.owner, one.post.category),
-                         (f"{CDN}/5_p0.png", "Example_12345678/illusts/2026-01-02_5_p0.png", "5_0", USER,
+                         (f"{CDN}/5_p0.png", "Example_12345678/illusts/2026-01-02_title_5_5_p0.png", "5_0", USER,
                           "illusts"))
         self.assertEqual(asked(ctx), ["/illust/5"])
 
@@ -309,7 +310,7 @@ class SingleTest(unittest.TestCase):
         ctx = self.single(illustType=1)
         (one,) = collect(Pixiv, "pxv:artwork/5", ctx=ctx)
         self.assertEqual((one.path, one.post.owner, one.post.category),
-                         ("Example_12345678/manga/2026-01-02_5_p0.png", USER, "manga"))
+                         ("Example_12345678/manga/2026-01-02_title_5_5_p0.png", USER, "manga"))
 
     def test_a_many_page_work_reads_pages(self):
         ctx = self.single(pageCount=3)
@@ -322,8 +323,8 @@ class SingleTest(unittest.TestCase):
         ctx._routes[f"{AJAX}/illust/5/ugoira_meta"] = ugoira_meta()
         found = collect(Pixiv, "pxv:artwork/5", ctx=ctx)
         self.assertEqual([(one.path, one.post.owner, one.post.category) for one in found],
-                         [("Example_12345678/ugoira/2026-01-02_5_p0.mp4", USER, "ugoira"),
-                          ("Example_12345678/ugoira/2026-01-02_5_p0.json", USER, "ugoira")])
+                         [("Example_12345678/ugoira/2026-01-02_title_5_5_p0.mp4", USER, "ugoira"),
+                          ("Example_12345678/ugoira/2026-01-02_title_5_5_p0.json", USER, "ugoira")])
 
     def test_the_referer_header_is_on_the_post(self):
         ctx = self.single()
@@ -363,10 +364,10 @@ class NameTest(unittest.TestCase):
     def test_a_profile_and_a_single_work_name_their_folder_the_same_way(self):
         found = collect(Pixiv, f"pxv:{USER}", ctx=self.profile_ctx("example_user"))
         self.assertEqual({one.path for one in found},
-                         {f"example_user_{USER}/illusts/2026-01-02_5_p0.png"})
+                         {f"example_user_{USER}/illusts/2026-01-02_title_5_5_p0.png"})
         ctx = SingleTest().single(userName="example_user")
         (one,) = collect(Pixiv, "pxv:artwork/5", ctx=ctx)
-        self.assertEqual(one.path, f"example_user_{USER}/illusts/2026-01-02_5_p0.png")
+        self.assertEqual(one.path, f"example_user_{USER}/illusts/2026-01-02_title_5_5_p0.png")
 
     def test_no_name_gives_the_id_alone(self):
         found = collect(Pixiv, f"pxv:{USER}", ctx=self.profile_ctx(""))
@@ -397,7 +398,7 @@ class UgoiraTest(unittest.TestCase):
     def test_both_keeps_the_zip_and_names_the_json_like_the_video(self):
         ctx, (video, info) = self.listing()
         self.assertEqual((video.path, info.path),
-                         ("Example_12345678/ugoira/2026-01-02_7_p0.mp4", "Example_12345678/ugoira/2026-01-02_7_p0.json"))
+                         ("Example_12345678/ugoira/2026-01-02_title_7_7_p0.mp4", "Example_12345678/ugoira/2026-01-02_title_7_7_p0.json"))
         self.assertEqual((video.file.url, video.file.keep, video.file.delays),
                          (ZIP.format(5), True, (("000000.jpg", 80), ("000001.jpg", 120))))
         text = info.file.content
@@ -406,7 +407,7 @@ class UgoiraTest(unittest.TestCase):
 
     def test_mp4_saves_the_video_alone(self):
         _, (video,) = self.listing(settings={"ugoira": "mp4"})
-        self.assertEqual((video.path, video.file.keep), ("Example_12345678/ugoira/2026-01-02_7_p0.mp4", False))
+        self.assertEqual((video.path, video.file.keep), ("Example_12345678/ugoira/2026-01-02_title_7_7_p0.mp4", False))
 
     def test_another_value_warns_once_and_uses_both(self):
         ctx, found = self.listing(settings={"ugoira": "zip"})
@@ -775,20 +776,20 @@ class NovelFilesTest(unittest.TestCase):
             routes={f"{AJAX}/novel/5/insert_illusts": inserted(**{
                 "900-2": f"{CDN}/900_p1.jpg", "901-1": f"{CDN}/901_p0.png"})})
         self.assertEqual([(one.path, one.key) for one in found], [
-            ("Example_12345678/novels/2026-01-02_5.md", "novel_5_0"),
-            ("Example_12345678/novels/2026-01-02_5_cover.jpg", "novel_5_1"),
-            ("Example_12345678/novels/2026-01-02_5_1.png", "novel_5_2"),
-            ("Example_12345678/novels/2026-01-02_5_2.jpg", "novel_5_3"),
-            ("Example_12345678/novels/2026-01-02_5_3.png", "novel_5_4")])
+            ("Example_12345678/novels/2026-01-02_title_5_5.md", "novel_5_0"),
+            ("Example_12345678/novels/2026-01-02_title_5_5_cover.jpg", "novel_5_1"),
+            ("Example_12345678/novels/2026-01-02_title_5_5_1.png", "novel_5_2"),
+            ("Example_12345678/novels/2026-01-02_title_5_5_2.jpg", "novel_5_3"),
+            ("Example_12345678/novels/2026-01-02_title_5_5_3.png", "novel_5_4")])
         names = [one.path.rpartition("/")[2] for one in found]
-        self.assertEqual(names[0], "2026-01-02_5.md")
-        self.assertEqual(names[2:], ["2026-01-02_5_1.png", "2026-01-02_5_2.jpg",
-                                     "2026-01-02_5_3.png"])
+        self.assertEqual(names[0], "2026-01-02_title_5_5.md")
+        self.assertEqual(names[2:], ["2026-01-02_title_5_5_1.png", "2026-01-02_title_5_5_2.jpg",
+                                     "2026-01-02_title_5_5_3.png"])
         self.assertEqual([one.url for one in found[2:]],
                          [EMBED.format(77), f"{CDN}/900_p1.jpg", f"{CDN}/901_p0.png"])
         text = found[0].file.content
-        self.assertIn("![](2026-01-02_5_1.png)a![](2026-01-02_5_2.jpg)![](2026-01-02_5_1.png)"
-                      "![](2026-01-02_5_3.png)", text)
+        self.assertIn("![](2026-01-02_title_5_5_1.png)a![](2026-01-02_title_5_5_2.jpg)![](2026-01-02_title_5_5_1.png)"
+                      "![](2026-01-02_title_5_5_3.png)", text)
         # One request for the novel, one for all its inserted illustrations.
         self.assertEqual(asked(ctx), ["/novel/5",
                                       "/novel/5/insert_illusts?id[]=900-2&id[]=901-1"])
@@ -799,7 +800,7 @@ class NovelFilesTest(unittest.TestCase):
             routes={f"{AJAX}/novel/5/insert_illusts": inserted(**{
                 "900-1": None, "901-1": f"{CDN}/901_p0.png"})})
         text = found[0].file.content
-        self.assertIn("[pixivimage:900-1] ![](2026-01-02_5_1.png)", text)
+        self.assertIn("[pixivimage:900-1] ![](2026-01-02_title_5_5_1.png)", text)
         self.assertEqual(len([one for one in found if one.path.endswith(".png")]), 1)
         self.assertEqual([level for level, line in ctx.seen.logs if "900-1" in line], ["warn"])
 
@@ -811,20 +812,20 @@ class NovelFilesTest(unittest.TestCase):
         _, found = novel_files("plain")
         cover = found[1]
         self.assertEqual((cover.path, cover.file.mirrors),
-                         ("Example_12345678/novels/2026-01-02_5_cover.jpg", (f"{ORIGINAL}.jpg", f"{ORIGINAL}.png")))
+                         ("Example_12345678/novels/2026-01-02_title_5_5_cover.jpg", (f"{ORIGINAL}.jpg", f"{ORIGINAL}.png")))
 
     def test_a_default_cover_is_not_saved(self):
         for url in ("https://s.pximg.net/common/images/no_cover.png", "", None,
                     "https://example.com/novel-cover-master/a_master1200.jpg"):
             with self.subTest(url=url):
                 _, found = novel_files("plain", coverUrl=url)
-                self.assertEqual([one.path for one in found], ["Example_12345678/novels/2026-01-02_5.md"])
+                self.assertEqual([one.path for one in found], ["Example_12345678/novels/2026-01-02_title_5_5.md"])
 
     def test_an_undated_novel_has_no_date_prefix(self):
         _, found = novel_files("[uploadedimage:77]", createDate=None,
                                textEmbeddedImages={"77": {"urls": {"original": EMBED.format(77)}}})
         self.assertEqual([one.path for one in found],
-                         ["Example_12345678/novels/5.md", "Example_12345678/novels/5_cover.jpg", "Example_12345678/novels/5_1.png"])
+                         ["Example_12345678/novels/title_5_5.md", "Example_12345678/novels/title_5_5_cover.jpg", "Example_12345678/novels/title_5_5_1.png"])
 
     def test_a_novel_with_no_text_is_changed(self):
         with self.assertRaises(Changed):
@@ -864,8 +865,8 @@ class NovelListTest(unittest.TestCase):
         ctx = self.novels([5])
         found = collect(Pixiv, f"pxv:{USER}", ctx=ctx, categories=["novels"])
         self.assertEqual([(one.path, one.key) for one in found[:2]],
-                         [("Example_12345678/novels/2026-01-02_5.md", "novel_5_0"),
-                          ("Example_12345678/novels/2026-01-02_5_cover.jpg", "novel_5_1")])
+                         [("Example_12345678/novels/2026-01-02_title_5_5.md", "novel_5_0"),
+                          ("Example_12345678/novels/2026-01-02_title_5_5_cover.jpg", "novel_5_1")])
 
     def test_a_masked_novel_is_hidden(self):
         ctx = self.novels([5], isMasked=True)
@@ -897,8 +898,8 @@ class SingleNovelTest(unittest.TestCase):
                 found = collect(Pixiv, text, ctx=ctx)
                 self.assertEqual(
                     [(one.path, one.key, one.post.owner, one.post.category) for one in found[:2]],
-                    [("Example_12345678/novels/2026-01-02_5.md", "novel_5_0", USER, "novels"),
-                     ("Example_12345678/novels/2026-01-02_5_cover.jpg", "novel_5_1", USER, "novels")])
+                    [("Example_12345678/novels/2026-01-02_title_5_5.md", "novel_5_0", USER, "novels"),
+                     ("Example_12345678/novels/2026-01-02_title_5_5_cover.jpg", "novel_5_1", USER, "novels")])
                 self.assertEqual(asked(ctx), ["/novel/5"])
 
     def test_post_fields(self):
@@ -923,3 +924,45 @@ class SingleNovelTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+ODD_TITLES = ["", "a/b: \"c\"?  d", "  ..dots..  ", "x‍y", "(brackets) [and] #hash %20",
+              "t" * 60, "\U0001f600 emoji", "CON", "a__b _ c"]
+
+
+class TitleNameTest(unittest.TestCase):
+    """The names the plugin sets itself equal what the engine makes from the template."""
+
+    def test_the_stem_is_what_the_engine_renders_and_cleans(self):
+        day = stamp(2)
+        for title in ODD_TITLES:
+            for date in (day, None):
+                with self.subTest(title=title, date=date):
+                    values = {"date": datetime.date(2026, 1, 2) if date else None,
+                              "title": title, "post": "7", "num": 0}
+                    made = _stem(date, title, "7", "_p0")
+                    self.assertEqual(made, flntext.fill(Pixiv.filename, values))
+                    self.assertEqual(flntext.filename(made), made)
+
+    def test_the_ugoira_json_is_named_like_the_video(self):
+        for title in ODD_TITLES[1:]:
+            with self.subTest(title=title):
+                works = {"7": work(7, kind=2, day=2, title=title)}
+                ctx = user_ctx(illusts=(7,), works=works, routes={
+                    f"{AJAX}/illust/7/ugoira_meta": ugoira_meta()})
+                video, info = collect(Pixiv, f"pxv:{USER}", ctx=ctx, categories=["ugoira"])
+                self.assertEqual(video.path.rpartition(".")[0], info.path.rpartition(".")[0])
+
+    def test_novel_names_are_clean_and_the_text_links_them(self):
+        title = "a/b: (c) [d] 50%"
+        ctx, found = novel_files(
+            "[uploadedimage:77]", title=title,
+            textEmbeddedImages={"77": {"urls": {"original": EMBED.format(77)}}})
+        names = [one.path.rpartition("/")[2] for one in found]
+        self.assertEqual(names, ["2026-01-02_a_b_(c)_[d]_50%_5.md",
+                                 "2026-01-02_a_b_(c)_[d]_50%_5_cover.jpg",
+                                 "2026-01-02_a_b_(c)_[d]_50%_5_1.png"])
+        for name in names:
+            self.assertEqual(flntext.filename(name), name)
+        self.assertIn("![](2026-01-02_a_b_%28c%29_%5Bd%5D_50%25_5_1.png)",
+                      next(one for one in found if one.path.endswith(".md")).file.content)
