@@ -22,6 +22,7 @@ uv tool install -e ./flnd
 ```sh
 flnd auth login ins cookies.txt        # log in to Instagram with a cookie file
 flnd get ins:example_user         # its own content: posts, reels, stories, ...
+flnd get pxv:12345678            # a pixiv user is written by its number
 flnd sync                         # what is new for every target you have followed
 ```
 

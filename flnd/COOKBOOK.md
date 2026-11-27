@@ -17,6 +17,7 @@ The plugin's code, a colon, the user. Posts, reels, stories and the rest of what
 owns are saved under `media/ins/example_user/`. The same command with another code does
 Twitter/X (`twt:example_handle`), TikTok (`tik:example_creator`), Threads (`thr:`), Facebook
 (`fbk:`), and so on. A profile link works too: `flnd get https://www.instagram.com/example_user/`.
+A pixiv user is written by its number: `flnd get pxv:12345678`.
 More: [Targets](SPEC.md#targets), [Folders](SPEC.md#folders).
 
 ## Pick categories
@@ -27,10 +28,11 @@ Goal: take only some parts of a profile, or the parts that are not taken by defa
 flnd get "ins:example_user|posts,reels"
 flnd get "ins:example_user|tagged"
 flnd get "ins:example_user|all"
+flnd get "pxv:12345678|shiori,novelshiori"
 ```
 
-After `|`, a comma list of categories. Opt-in ones (such as `tagged`) need their name; `all`
-takes every category.
+After `|`, a comma list of categories. Opt-in ones (such as `tagged`, or pixiv's bookmarks
+`shiori` and `novelshiori`) need their name; `all` takes every category.
 More: [Categories](SPEC.md#categories).
 
 ## A single post
@@ -51,7 +53,10 @@ Goal: save what a search finds. A search needs `--folder`, which says where all 
 
 ```sh
 flnd get "twt?example words" --folder="{query}"
+flnd get "pxv?example_tag" --folder="{query}"
 ```
+
+`pxv?` searches pixiv's tags, and a pixiv tag link works too.
 
 More: [A search needs a folder](SPEC.md#a-search-needs-a-folder),
 [Searches and `--limit`](SPEC.md#searches-and---limit).
