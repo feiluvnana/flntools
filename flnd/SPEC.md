@@ -675,13 +675,12 @@ early. What a run skips and where it stops:
   or strictly older than the head's time (never equal: posts of the head's second or day may be new;
   a day against a time compares days; a post with no time is never old by time). A sync stops after
   4 old posts in a row; a new post resets the count, and a post marked `pinned` is skipped. No pin
-  mark is trusted: 4 is above every site's pin limit (ins 3, tik 3, twt 1, thr 1). A head with no
-  time (an older home kept the bare id) takes the time of its post when the pass meets it; if that
-  post is gone, the listing is read whole once. A plugin may read that head as `ctx.head`, a
-  read-only mapping, to ask its site for less; it is None on a first read, with `--again`, for a
-  category that isn't newest first, on a single route, and outside a category's listing. The
-  stop rule above still decides where the listing ends. A listing with
-  nothing new is one request when the site pages by cursor (`Skipped`, reason `nothing new`). A
+  mark is trusted: 4 is above every site's pin limit (ins 3, tik 3, twt 1, thr 1). A stored head
+  that is not an `{"id", "ts"}` object counts as no head. A plugin may read that head as
+  `ctx.head`, a read-only mapping, to ask its site for less; it is None on a first read, with
+  `--again`, for a category that isn't newest first, on a single route, and outside a category's
+  listing. The stop rule above still decides where the listing ends. A listing with nothing new is
+  one request when the site pages by cursor (`Skipped`, reason `nothing new`). A
   search keeps the key of its first target as its head, and a sync stops at it (`--when` goes on to
   the search)
 - Older than `--when`: after 5 posts in a row older than its start

@@ -1920,7 +1920,7 @@ class _Stops:
 
     Args:
         sync: whether this pass stops at its head; a first download doesn't.
-        head: what an earlier run stored: `{"id", "ts"}`, or the bare id an older home kept.
+        head: what an earlier run stored: `{"id", "ts"}`.
     """
 
     def __init__(self, sync: bool = False, head: Any = None) -> None:
@@ -1928,9 +1928,7 @@ class _Stops:
         self.id: str | None = None
         self.ts: float | None = None
         self.day: datetime.date | None = None
-        if isinstance(head, str):
-            self.id = head
-        elif isinstance(head, dict):
+        if isinstance(head, dict):
             self.id = head.get("id")
             when = head.get("ts")
             if isinstance(when, str):
@@ -1941,9 +1939,6 @@ class _Stops:
     def old(self, post: Any) -> bool:
         """Whether `post`, one that isn't pinned, is the head or strictly older than it."""
         if post.id == self.id:
-            if self.day is None:
-                # A head with no time (a bare id): the head post gives it for the rest of the pass.
-                self.ts, self.day = stamp(post.listed), day(post.listed)
             return True
         return self._older(post)
 
@@ -1963,8 +1958,6 @@ class _Stops:
     @property
     def record(self) -> Mapping[str, Any] | None:
         """The head as a read-only `{"id", "ts"}` mapping for a plugin; None with no head."""
-        if isinstance(self.raw, str):
-            return MappingProxyType({"id": self.raw})
         if isinstance(self.raw, dict) and self.id is not None:
             return MappingProxyType(dict(self.raw))
         return None

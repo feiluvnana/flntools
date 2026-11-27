@@ -185,8 +185,8 @@ class TargetRow(msgspec.Struct):
     files: int = 0
     bytes: int = 0
     # Each listing's newest post a run that read it from the top saw, where a sync stops: for
-    # posts `{"id": ..., "ts": ...}` (Unix seconds, a day as `YYYY-MM-DD`, or null; an old home
-    # keeps the bare id), for a search the key of its first target.
+    # posts `{"id": ..., "ts": ...}` (Unix seconds, a day as `YYYY-MM-DD`, or null),
+    # for a search the key of its first target.
     heads: dict[str, Any] = {}
     # For a followed search: the `--folder` its hits go to, which a plain sync reuses.
     folder: str | None = None

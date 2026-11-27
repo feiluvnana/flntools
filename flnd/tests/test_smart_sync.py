@@ -505,31 +505,13 @@ class HeadRuleTest(TimelineCase):
         self.assertEqual(self.read, ["n1", "o0", "o1", "o2", "o3", "o4"])
         self.assertEqual(self.saved(), ["n1", "p1"])
 
-    def test_a_bare_id_head_takes_its_time_from_its_post_and_is_rewritten(self):
+    def test_a_head_that_is_not_an_object_counts_as_no_head(self):
         self.start()
-        self.sync()
-        dated_read, dated_requests = list(self.read), len(self.requests)
         self.sql("UPDATE targets SET heads = ? WHERE key = ?", '{"posts": "h"}',
-                 "tml:example_user")
-        self.sync()
-        # Nothing new: the same posts and requests as a dated head.
-        self.assertEqual((self.read, len(self.requests)), (dated_read, dated_requests))
-        self.put(("n1", T0 + 30), ("h", T0), *OLD)
-        self.sql("UPDATE targets SET heads = ? WHERE key = ?", '{"posts": "h"}',
-                 "tml:example_user")
-        self.sync()
-        self.assertEqual(self.read, ["n1", "h", "o1", "o2", "o3"])
-        self.assertEqual(self.head(), {"id": "n1", "ts": float(T0 + 30)})
-
-    def test_a_bare_id_head_that_was_deleted_reads_the_listing_once(self):
-        self.start()
-        self.sql("UPDATE targets SET heads = ? WHERE key = ?", '{"posts": "gone"}',
                  "tml:example_user")
         self.sync()
         self.assertEqual(self.read, ["h", *(name for name, _ in OLD)])
         self.assertEqual(self.head(), {"id": "h", "ts": float(T0)})
-        self.sync()
-        self.assertEqual(self.read, ["h", "o1", "o2", "o3"])
 
 
 # ---------------------------------------------------------------------------------------------
