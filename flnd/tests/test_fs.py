@@ -206,7 +206,6 @@ class WalkSweepTest(FsCase):
     def test_walk_yields_files_recursively_and_skips_parts(self):
         (self.folder / "sub" / "deep").mkdir(parents=True)
         for name in ("a.jpg", "sub/b.MP4", "sub/deep/c.txt", "x.jpg.part", "x.jpg.part.json",
-                     ".x.jpg.stage", ".x.jpg.stage.lock", ".x.jpg.stage.json",
                      ".old.1234abcd.part", ".hidden.jpg"):
             (self.folder / name).write_text("x")
         entries = list(_files.walk(self.folder))
@@ -222,8 +221,6 @@ class WalkSweepTest(FsCase):
             "old.jpg.part": 800_000, "old.jpg.part.json": 800_000,  # a week old: removed
             "lone.jpg.part.json": 4000,                              # orphan sidecar: removed
             "young.jpg.part.json": 100,                              # orphan, too new: kept
-            ".legacy.mp4.stage": 800_000, ".legacy.mp4.stage.lock": 800_000,  # removed
-            ".gone.stage.lock": 4000,                                # orphan old lock: removed
             "real.mp4": 800_000,                                     # media: kept
         }
         for name, seconds in ages.items():
@@ -232,7 +229,7 @@ class WalkSweepTest(FsCase):
         fake = _time.Fake()
         fake.advance(now - fake.wall)
         with _time.use(fake):
-            self.assertEqual(_files.sweep(self.folder), 6)
+            self.assertEqual(_files.sweep(self.folder), 3)
         self.assertEqual(self.names(), ["new.jpg.part", "new.jpg.part.json", "real.mp4",
                                         "young.jpg.part.json"])
 

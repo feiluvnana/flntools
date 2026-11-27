@@ -42,14 +42,9 @@ REPLACE_TRIES, REPLACE_PAUSE = 20, 0.05
 # Errnos that mean the file system has no locks at all (some network shares): write unlocked.
 NO_LOCKS = {errno.ENOLCK, errno.EOPNOTSUPP, getattr(errno, "ENOTSUP", errno.EOPNOTSUPP)}
 # A sweep removes a part untouched this long (it may still resume until then), and an orphan
-# sidecar or an old lock file untouched this long.
+# sidecar untouched this long.
 KEEP_AGE = 7 * 86_400
 SETTLE_AGE = 3_600
-# A hidden stage file an old flnd may still have left beside a download.
-OLD_STAGE = ".stage"
-# What may sit beside a part: its sidecar, an old flnd's hard link being made, and an old stage's
-# `.info` sidecar and lock file.
-SIDES = (SIDE, ".link", ".info", ".lock")
 # Writes reach the disk this many bytes at a time.
 BUFFER = 128 << 10
 if WINDOWS:
@@ -330,8 +325,7 @@ def sweep(folder: str | os.PathLike[str]) -> int:
     """Remove the stale parts under `folder`: untouched for a week.
 
     A part kept by a failed download stays a week, so a later run can resume it. A sidecar
-    without its part goes after an hour. The hidden `.<name>.stage` files older versions left go
-    like parts, and their orphan `.lock` files like sidecars.
+    without its part goes after an hour.
 
     Args:
         folder: the target's folder; a missing one has nothing to sweep.
@@ -348,13 +342,13 @@ def sweep(folder: str | os.PathLike[str]) -> int:
     parts: list[os.DirEntry[str]] = []
     sides: dict[str, os.DirEntry[str]] = {}
     for entry in _scan(folder):
-        if _is_part(entry.name):
+        if entry.name.endswith(PART):
             parts.append(entry)
         elif _temporary(entry.name):
             sides[entry.path] = entry
     removed = 0
     for entry in parts:
-        own = [entry.path + suffix for suffix in SIDES if entry.path + suffix in sides]
+        own = [entry.path + SIDE] if entry.path + SIDE in sides else []
         for path in own:
             sides.pop(path)
         if _older(entry, now, KEEP_AGE):
@@ -559,19 +553,9 @@ def _scan(folder: str | os.PathLike[str]) -> Iterator[os.DirEntry[str]]:
             raise disk(error) from error
 
 
-def _is_part(name: str) -> bool:
-    """Whether `name` is a part, or a stage an older flnd left (`.<name>.stage`)."""
-    return name.endswith(PART) or (name.startswith(".") and name.endswith(OLD_STAGE))
-
-
 def _temporary(name: str) -> bool:
-    """Whether a file is a part, a part's sidecar, or an old stage's sidecar or lock."""
-    if _is_part(name):
-        return True
-    for suffix in SIDES:
-        if name.endswith(suffix) and _is_part(name[: -len(suffix)]):
-            return True
-    return False
+    """Whether a file is a part, or a part's sidecar."""
+    return name.endswith(PART) or (name.endswith(SIDE) and name[: -len(SIDE)].endswith(PART))
 
 
 def _older(entry: os.DirEntry[str], now: float, age: float) -> bool:
