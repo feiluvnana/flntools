@@ -143,10 +143,11 @@ def page(*results, feeds=(), scroll=(), url=""):
                              for line in batch]])
 
 
-def header(*tab_keys, user_id=None, cover="https://cdn.example/c.png", typename="User"):
+def header(*tab_keys, user_id=None, cover="https://cdn.example/c.png", typename="User",
+           name="Example Name"):
     sections = [{"node": {"tab_key": key, "all_collections": {"nodes": []}}} for key in tab_keys]
     return {"data": {"user": {"profile_header_renderer": {"user": {
-        "id": user_id, "__typename": typename,
+        "id": user_id, "__typename": typename, "name": name,
         "profilePicLarge": {"uri": "https://cdn.example/v/pic.jpg?stp=1"},
         "profilePhoto": {"id": "11"},
         "cover_photo": {"photo": {"id": "12", "image": {"uri": cover}}},
@@ -155,8 +156,11 @@ def header(*tab_keys, user_id=None, cover="https://cdn.example/c.png", typename=
     }}}}}
 
 
-def photo(photo_id, uri="https://cdn.example/p.jpg", *, stamp=NOON, album=None, owner=None):
+def photo(photo_id, uri="https://cdn.example/p.jpg", *, stamp=NOON, album=None, owner=None,
+          caption=None):
     node = {"__typename": "Photo", "id": photo_id, "viewer_image": {"uri": uri}}
+    if caption:
+        node["message"] = {"text": caption}
     if stamp:
         node["creation_time"] = stamp
     if album:
@@ -267,13 +271,14 @@ class ProfileTest(unittest.TestCase):
         # from the content, which `collect` doesn't see, so its stem and key are checked.
         [webp] = [s for s in saved if s.key == "54"]
         self.assertEqual((webp.path.rpartition(".")[0], webp.file.name),
-                         ("posts/2023-11-15_54", None))
-        self.assertEqual(sorted((s.path, s.key) for s in saved if s is not webp), PAIRS)
+                         ("example.page/posts/2023-11-15_54", None))
+        self.assertEqual(sorted((s.path, s.key) for s in saved if s is not webp),
+                         [(f"example.page/{path}", key) for path, key in PAIRS])
         self.assertEqual({tuple(s.post.headers.items()) for s in saved},
                          {(("Referer", f"{SITE}/"),)})
 
     def test_posts_pops_results_from_profile(self):
-        profile = {"results": [{"data": photo("1")["data"]}], "owner": "42"}
+        profile = {"results": [{"data": photo("1")["data"]}], "owner": "42", "name": ""}
         ctx = FakeCtx(Facebook)
 
         async def run_posts():
@@ -331,6 +336,25 @@ class ProfileTest(unittest.TestCase):
             "posts": "", "highlights": "", "photos": f"{BASE}/photos", "tagged": "", "albums": "",
             "reels": f"{BASE}/reels_tab", "videos": "", "stories": "", "profile": ""})
 
+    def test_a_caption_names_the_file_and_an_id_target_names_its_folder(self):
+        found = {}
+        for target in ("example.page", "100012345678901"):
+            pages = {f"{SITE}/{target}": page(header(*TABS, user_id="42"),
+                                              photo("51", caption="First words here"),
+                                              photo("52"))}
+            saved, _ = run(f"fbk:{target}", categories=["posts", "profile"], pages=pages)
+            found[target] = sorted((s.path, s.key) for s in saved)
+        vanity, numeric = found["example.page"], found["100012345678901"]
+        self.assertEqual([path for path, _ in vanity], [
+            "example.page/posts/2023-11-15_52.jpg",
+            "example.page/posts/2023-11-15_First_words_here_51.jpg",
+            "example.page/profile/cover_12.png", "example.page/profile/profile_11.jpg"])
+        self.assertEqual([path.replace("Example_Name_100012345678901", "example.page")
+                          for path, _ in numeric], [path for path, _ in vanity])
+        self.assertEqual([key for _, key in numeric], [key for _, key in vanity])
+        self.assertEqual([key for _, key in vanity],
+                         ["52", "51", "profile/cover_12.png", "profile/profile_11.jpg"])
+
     def test_a_pictures_name_and_key_take_the_format_the_cdn_sends(self):
         # The key is the path, so the extension is pinned as API 1 named it, not left to the
         # engine's reading of the content.
@@ -342,8 +366,9 @@ class ProfileTest(unittest.TestCase):
                 pages = {BASE: page(header(cover=url))}
                 saved, _ = run(categories=["profile"], pages=pages)
                 self.assertEqual([(s.path, s.key) for s in saved],
-                                 [("profile/profile_11.jpg",) * 2,
-                                  (f"profile/cover_12.{extension}",) * 2])
+                                 [("example.page/profile/profile_11.jpg", "profile/profile_11.jpg"),
+                                  (f"example.page/profile/cover_12.{extension}",
+                                   f"profile/cover_12.{extension}")])
 
     def test_when_keeps_undated_files_and_drops_files_outside_it(self):
         pages = {BASE: page(header(), photo("1"), photo("2", stamp=0))}
@@ -709,11 +734,11 @@ class WalkerTest(unittest.TestCase):
         saved, _ = run(categories=["posts", "highlights"], pages=pages)
         paths = sorted((s.path, s.key) for s in saved)
         self.assertEqual(paths, [
-            ("highlights/Trip_2026/2023-11-15_201.mp4",
+            ("example.page/highlights/Trip_2026/2023-11-15_201.mp4",
              "highlights/Trip_2026/2023-11-15_201.mp4"),
-            ("highlights/Work/2023-11-15_202.jpg",
+            ("example.page/highlights/Work/2023-11-15_202.jpg",
              "highlights/Work/2023-11-15_202.jpg"),
-            ("posts/2023-11-15_501.jpg", "501"),
+            ("example.page/posts/2023-11-15_501.jpg", "501"),
         ])
         # Verify dates learned in posts carry over to undated photos on the same profile.
         prof = profile_of(BASE, [header(*TABS, user_id="42"), photo("501", stamp=NOON)], [])

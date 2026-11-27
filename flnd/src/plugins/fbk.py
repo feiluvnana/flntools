@@ -28,6 +28,7 @@ from flnd.plugin import (
     UsageError,
     cookies,
     dig,
+    headline,
     meta,
     route,
     wall,
@@ -172,8 +173,11 @@ class Facebook(Plugin):
     # A file's folder is where it was found: `part` is its tab (or "videos" or "albums"),
     # `album` the album's title. A single link's files have neither.
     folder = "{part}/{album}"
-    fields = ("part", "album")
-    filename = "{date}_{post}"
+    # `title` is the caption's first words; `name` is the profile's display name for a profile
+    # given by its id (its folder is `<name>_<id>`), else empty.
+    fields = ("part", "album", "title", "name")
+    root = "{name}_{target}"
+    filename = "{date}_{title:.40}_{post}"
     # A photo found in two tabs is saved once; changing it downloads every saved file again.
     key = "{post}"
     # Refused before any route that has fewer literal parts: `watch?v=<id>` still reads.
@@ -356,7 +360,7 @@ class Facebook(Plugin):
         embedded_more = _has_next_page(results, "posts")
         for result in results:
             for post in media_posts(result, "posts", owner=profile["owner"], seen=seen,
-                                    dates=dates):
+                                    name=profile["name"], dates=dates):
                 yield post
         del results
         reloads = 0
@@ -380,7 +384,7 @@ class Facebook(Plugin):
                             got_new = True
                         seen_keys.update(keys)
                         for post in media_posts(line, "posts", owner=profile["owner"], seen=seen,
-                                                dates=dates):
+                                                name=profile["name"], dates=dates):
                             yield post
                         if keys:
                             await ctx.pause(random.uniform(2.0, 4.5), "pacing scroll pages")
@@ -433,7 +437,7 @@ class Facebook(Plugin):
                 raise SiteError(f"fbk: the highlight {url} didn't load")
             cards = _story_cards(results)
             for item in cards:
-                yield post_of(item, "highlights", album=title)
+                yield post_of(item, "highlights", album=title, name=profile["name"])
             ctx.log("info", "highlights: {n} in {title} ({id})", n=len(cards), title=title, id=hid)
 
     @user.category(url="{photos_url}", newest_first=True)
@@ -455,7 +459,7 @@ class Facebook(Plugin):
         Media on the tab itself is yielded as it comes; each album's goes in
         `albums/<title>/`. The albums' pages load in warm tabs while the first is read.
         """
-        url, owner = profile["albums_url"], profile["owner"]
+        url, owner, name = profile["albums_url"], profile["owner"], profile["name"]
         dates = profile.get("dates") if isinstance(profile, dict) else None
         if not url:
             ctx.log("info", "albums: this profile has no such tab")
@@ -464,14 +468,15 @@ class Facebook(Plugin):
         async for result in tab_results(ctx, url, "albums"):
             if isinstance(result, dict):
                 listed.update(album_links(result))
-            for post in media_posts(result, "albums", owner=owner, dates=dates):
+            for post in media_posts(result, "albums", owner=owner, name=name, dates=dates):
                 yield post
         await ctx.warm(list(listed))
         for index, (album, title) in enumerate(listed.items()):
             if index:
                 await ctx.pause(random.uniform(1.5, 3.5), "pacing album pages")
             async for result in tab_results(ctx, album, "album"):
-                for post in media_posts(result, "albums", album=title, owner=owner, dates=dates):
+                for post in media_posts(result, "albums", album=title, owner=owner, name=name,
+                                        dates=dates):
                     yield post
 
     @user.category(url="{reels_url}", newest_first=True)
@@ -510,7 +515,7 @@ class Facebook(Plugin):
                 raise SiteError(f"fbk: the story bucket {url} didn't load")
             items = _story_cards(results)
             for item in items:
-                yield post_of(item, "stories")
+                yield post_of(item, "stories", name=profile["name"])
             ctx.log("info", "stories: {n} in {url}", n=len(items), url=url)
 
     # Keyed by its path, so a new picture is a new file; the name, extension included, is
@@ -523,7 +528,8 @@ class Facebook(Plugin):
             return
         for kind, url, photo_id in profile["pictures"]:
             name = f"{kind}_{photo_id}.{image_extension(url)}"
-            yield Post(photo_id, [File(url, name=name)], headers=CDN_HEADERS)
+            yield Post(photo_id, [File(url, name=name)], headers=CDN_HEADERS, title="",
+                       name=profile["name"])
 
 
 # ---------------------------------------------------------------------------------------------
@@ -671,7 +677,8 @@ async def read_tab(ctx: Ctx, profile: Mapping[str, Any], category: str) -> Async
     seen: set[str] = set()
     dates = profile.get("dates") if isinstance(profile, dict) else None
     async for result in tab_results(ctx, url, category):
-        for post in media_posts(result, category, owner=profile["owner"], seen=seen, dates=dates):
+        for post in media_posts(result, category, owner=profile["owner"], seen=seen,
+                                name=profile["name"], dates=dates):
             yield post
 
 
@@ -779,6 +786,8 @@ def profile_of(url: str, results: list[Any], early: list[Any]) -> dict[str, Any]
     profile: dict[str, Any] = {
         "url": url, "results": [*results, *early], "header": header is not None,
         "owner": header["id"] if header else None,
+        # The display name, only for a profile given by its id: a vanity name is readable.
+        "name": header["name"] if header and url.rsplit("/", 1)[-1].isdigit() else "",
         "pictures": header["pictures"] if header else [],
         "buckets": header["buckets"] if header else [],
         "highlights": {}, "highlights_more": False, "highlights_seen": False,
@@ -920,8 +929,9 @@ def read_header(result: Any) -> dict[str, Any] | None:
     buckets = [str(node["id"]) for node in dig(user, "story_bucket.nodes") or []
                if isinstance(node, dict) and node.get("id")]
     # A page's `__typename` is "Page" (confirm live): it has no tagged tab.
-    return {"id": user.get("id"), "pictures": pictures, "buckets": buckets,
-            "paths": {path for path in paths if path}, "page": user.get("__typename") == "Page"}
+    return {"id": user.get("id"), "name": user.get("name") or "", "pictures": pictures,
+            "buckets": buckets, "paths": {path for path in paths if path},
+            "page": user.get("__typename") == "Page"}
 
 
 # ---------------------------------------------------------------------------------------------
@@ -1023,10 +1033,12 @@ class Item(NamedTuple):
     # Its owner's vanity name, else id (None: unnamed); and whether its node's type says reel.
     owner: str | None = None
     reel: bool = False
+    # The first words of the post's caption, "" for none.
+    title: str = ""
 
 
 def media_posts(result: Any, tab: str, *, album: str | None = None, owner: str | None = None,
-                seen: set[str] | None = None,
+                name: str = "", seen: set[str] | None = None,
                 dates: dict[str, Any] | None = None) -> Iterator[Post]:
     """Each photo and video of `owner` in one result of a tab, filed where it belongs.
 
@@ -1038,6 +1050,7 @@ def media_posts(result: Any, tab: str, *, album: str | None = None, owner: str |
         tab: the category of the tab being read.
         album: the album being read, which files every media under it.
         owner: the profile's id or name: media another account owns is left out. None keeps all.
+        name: the profile's display name for a folder named by it ("" for none).
         seen: the ids already yielded across one tab; None starts a set for this result.
         dates: mutable map of media id -> timestamp shared across a profile's categories.
     """
@@ -1057,11 +1070,11 @@ def media_posts(result: Any, tab: str, *, album: str | None = None, owner: str |
             part, title = "videos", None
         else:
             part, title = tab, None
-        yield post_of(item, part, album=title)
+        yield post_of(item, part, album=title, name=name)
 
 
 def post_of(item: Item, part: str, *, album: str | None = None,
-            category: str | None = None) -> Post:
+            category: str | None = None, name: str = "") -> Post:
     """One item as a post of one file, with the CDN's Referer; the engine names its extension
     from the content (the CDN converts an image to the format its `stp=dst-<format>` names).
 
@@ -1073,7 +1086,7 @@ def post_of(item: Item, part: str, *, album: str | None = None,
     else:
         file = File(mirrors=item.url)
     return Post(item.id, [file], date=item.date, headers=CDN_HEADERS, owner=item.owner,
-                category=category, part=part, album=album)
+                category=category, part=part, album=album, title=item.title, name=name)
 
 
 def image_extension(url: str) -> str:
@@ -1108,7 +1121,7 @@ def _other_actor(data: dict, owner: str | None) -> bool:
 
 
 def media_items(data: Any, stamp: Any = None, seen: set[str] | None = None, *,
-                owner: str | None = None) -> Iterator[Item]:
+                owner: str | None = None, text: str | None = None) -> Iterator[Item]:
     """Every photo and video in a result, each once, dated by its nearest dated node.
 
     A video's node isn't searched further (its thumbnails are no photos), nor is the profile
@@ -1120,23 +1133,26 @@ def media_items(data: Any, stamp: Any = None, seen: set[str] | None = None, *,
         stamp: the date of the nearest dated node above `data`.
         seen: the ids found so far, shared across results.
         owner: the profile's id or name; None keeps all.
+        text: the caption of the nearest node above `data` that has a `message`.
     """
     seen = set() if seen is None else seen
     if isinstance(data, list):
         for value in data:
-            yield from media_items(value, stamp, seen, owner=owner)
+            yield from media_items(value, stamp, seen, owner=owner, text=text)
         return
     if not isinstance(data, dict) or _other_actor(data, owner):
         return
     if data.get("__typename") != "Album":
         stamp = posted_on(data) or stamp
+    message = dig(data, "message.text")
+    text = message if isinstance(message, str) and message else text
     item = video_item(data, stamp) or photo_item(data, stamp)
     owned_by, named = dig(data, "owner.id || video_owner.id"), dig(data, OWNER_NAME)
     # An owner written as a name is compared with the node's vanity name, when it has one.
     theirs = owned_by if (owner or "0").isdigit() else named
     if item is not None and item.id not in seen and not (owner and theirs and theirs != owner):
         seen.add(item.id)
-        yield item._replace(owner=named or owned_by)
+        yield item._replace(owner=named or owned_by, title=headline(text))
     typename = data.get("__typename", "")
     if (item is not None and item.kind == "video") or typename in VIDEO_TYPES:
         return
@@ -1149,7 +1165,7 @@ def media_items(data: Any, stamp: Any = None, seen: set[str] | None = None, *,
                    if isinstance(actors, list) else [])
             if owner not in ids:
                 continue
-        yield from media_items(value, stamp, seen, owner=owner)
+        yield from media_items(value, stamp, seen, owner=owner, text=text)
 
 
 def video_item(node: dict, stamp: Any) -> Item | None:

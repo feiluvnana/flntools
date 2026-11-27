@@ -511,9 +511,9 @@ makes a title of a caption: its first non-empty line, with `#tags`, `@names` and
 removed, whitespace squeezed to single spaces and trimmed ("" for nothing left).
 
 Plugin fields: `ins` `album title`; `thr` `title`; `twt` `part n title name`; `tik` `part album idx
-title`; `fbk` `part album`; `loi` `author title part`; `mht` `title order author genres chapters
-name`; `smp` `author name`; `pxv` `title user name`; `web` `name`; a plugin of your own declares its
-`fields`.
+title`; `fbk` `part album title name`; `loi` `author title part`; `mht` `title order author genres
+chapters name`; `smp` `author name`; `pxv` `title user name`; `web` `name`; a plugin of your own
+declares its `fields`.
 
 Rendering: each `/` segment is filled alone. A missing or empty field drops the separators
 (`_ - space . : ,`) next to it, and a segment that comes out empty is left out, so `{date}_{target}`
@@ -1106,9 +1106,12 @@ up to 32.
   `stories`, `profile` (own); `tagged` (opt-in). A video found in another tab goes to `videos`, a
   photo naming its album to `albums/<album>`; others' media (including shared posts) and sidebar
   preview tiles are left out.
-- **Folder:** `{part}/{album}`; `highlights/{album}` for `highlights`; `profile` for `profile`.
-  **Filename:** `{date}_{post}` (an undated photo takes its date from `posts` or HTTP
-  `Last-Modified`); profile pictures `profile_<id>`, covers `cover_<id>`.
+- **Root:** `{name}_{target}`, `name` being the display name, only for a profile given by its
+  id (`media/fbk/<name>_<id>/`); a vanity name has none, so its folder is `<vanity>`.
+  **Folder:** `{part}/{album}`; `highlights/{album}` for `highlights`; `profile` for `profile`.
+  **Filename:** `{date}_{title:.40}_{post}` (`title` is the caption's first words, empty for
+  none; an undated photo takes its date from `posts` or HTTP `Last-Modified`); profile pictures
+  `profile_<id>`, covers `cover_<id>`.
 - **Key:** `{post}` (`fbk:<id>`, so a photo in two tabs is saved once); `highlights` and `profile`
   key `{path}`.
 - **Login:** cookies `c_user` or `xs` (optional, but a logged-out browser sees little).
@@ -1122,7 +1125,7 @@ up to 32.
 - **Known gaps:** `/photos /groups /events /stories /marketplace /hashtag` are refused; a page is
   told from a profile by the header's `__typename` (confirm live); stories are those active now;
   without a header `stories` and `profile` are skipped; undated photos take a neighbour's date.
-- **Saved as:** `media/fbk/example.page/photos/2026-01-02_1234567890.jpg`,
+- **Saved as:** `media/fbk/example.page/photos/2026-01-02_Trip_to_the_sea_1234567890.jpg`,
   `media/fbk/example.page/albums/Holiday/2026-01-02_1234567891.jpg`
 
 ### loi (LOIBUS)
