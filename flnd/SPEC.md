@@ -436,11 +436,27 @@ name):
 
 The owner is the post's: `user.username`, `screen_name`, `uniqueId`, a Facebook vanity name else its
 id. With no owner in the data the post goes where it always did, `media/<code>/<post id>/`, with no
-category folder, and a log line says so. Any route declared `single` is filed this way, whatever its name (`artwork`,
-`novel`); `web` and `mht`'s chapter never give an owner, so they sit under their id. `loi`'s template starts with `{author}`, so its root is
-`media/loi/`. A search's hits ignore all this: they go to the search's `--folder` ([A search needs a
-folder](#a-search-needs-a-folder)). Files saved earlier stay where they are, and keys are unchanged,
-so a post saved by link is skipped, and found in place, when its profile is synced later.
+category folder, and a log line says so. Any route declared `single` is filed this way, whatever
+its name (`artwork`, `novel`); `web` and `mht`'s chapter never give an owner, so they sit under
+their id. `loi` declares `root = "{author}"`, so its posts sit in `media/loi/<author>/`. A search's
+hits ignore all this: they go to the search's `--folder` ([A search needs a
+folder](#a-search-needs-a-folder)). Files saved earlier stay where they are, and keys are
+unchanged, so a post saved by link is skipped, and found in place, when its profile is synced
+later.
+
+### `root`
+
+A plugin may name its targets' folders with `root`, a class attribute that is a template like
+`folder`, `"{target}"` by default: the folder of a target under `media/<code>/`. It is filled for
+each file with the same fields, and follows the same rules as `folder` (the cleaner, an empty
+field dropping its separator, containment). The file goes to
+`media/<code>/<root filled>/<folder filled>/<filename>`. `{target}` of a single post is its owner,
+else its id. `root = "{target}_{name}"` files `example_user`'s posts, with the post field `name`
+`Example`, in `media/<code>/example_user_Example/`; an empty `name` gives `example_user`. `root` is
+no `config.toml` key. `--folder` replaces `root` and `folder` both, for the categories it names; a
+category it leaves out keeps its default place, under `root`. A single post's `--folder` templates
+are under its owner's folder, as above. With a root of post fields, a run sweeps no stale parts of
+a target's folder, as with a `--folder` of fields.
 
 ### `--folder`
 
@@ -597,7 +613,7 @@ filename = "{post}_{n}"            # drops the leading date
 
 `filename` (no extension: the engine adds it) and `folder` replace the plugin's templates, and take
 the same fields and checks. A category's own `folder` still wins over the plugin's. The history key
-(`key`) is the plugin's and cannot be set.
+(`key`) and `root` are the plugin's and cannot be set.
 
 ### Parts
 
@@ -937,7 +953,8 @@ One section per built-in plugin, in the order links are tried (`web` last). Targ
 refusals are in [Targets](#targets). Each section lists categories (`own` ones are the default,
 `opt-in` ones need a name or `all`; NF marks newest-first, the only ones that stop early), folder,
 file name and history key templates, login, limits and walls, and known gaps. Everything here is the
-code's own declaration; `folder` is under `media/<code>/<value>/`.
+code's own declaration; `root` is under `media/<code>/` (default `{target}`, the target's
+value), `folder` under the root.
 
 Shared by every cookie login: method `file`, a cookie file's path; the cookies of the
 plugin's domains are kept; a run warns when the login cookie expires within 3 days. Walls and blocks
@@ -1086,10 +1103,11 @@ up to 32.
   account, archives. HTTP to `api.moegoat.com`, signed as the site's script signs; links are AES.
 - **Categories:** `archive` NF (info.md with links, the archives) then `photo` NF (previews; info.md
   without links only when `archive` is not wanted), both own.
-- **Folder:** `{author}/{post} {title}`, from `media/loi/` (`author` is the post's category, `misc`
-  when none); previews (`01.jpg`), info.md and an archive's files all sit in it, the archive is
-  unpacked there (`unpack="here"`) and deleted. **Key:** `{dir}/{part}/{file}` (`part` is `images`
-  for previews): the path from before previews left `images/`, so saved posts stay saved.
+- **Root:** `{author}`. **Folder:** `{post} {title}`, under `media/loi/<author>/` (`author` is the
+  post's category, `misc` when none); previews (`01.jpg`), info.md and an archive's files all sit
+  in it, the archive is unpacked there (`unpack="here"`) and deleted. **Key:**
+  `{dir}/{part}/{file}` (`part` is `images` for previews): the path from before previews left
+  `images/`, so saved posts stay saved.
 - **Login:** cookie `access-token` (optional; a Bearer token). Archives need a VIP account; without
   one `archive` warns and writes info.md without links.
 - **Limits and walls:** pace 0.5. Daily archive quota by VIP level: 15, 25, 40, 60 (SVIP doubles),

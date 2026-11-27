@@ -169,6 +169,8 @@ DASH_EXTENSION = ".mp4"
 # `cover_12.png` and `.torrent` in `file.torrent`, not `.2` in `v1.2` (5.3).
 EXTENSION = re.compile(r"\.[A-Za-z][A-Za-z0-9]{0,6}")
 STOPPED = "stopped by Ctrl-C"
+# A plugin's default `root`: the target's own folder.
+ROOT = "{target}"
 FINISHING = "stopping: {files} finishing (Ctrl-C again to stop now)"
 # Seconds a wait on the loop looks again at the stop state: short enough that Ctrl-C feels at
 # once, long enough to cost nothing.
@@ -451,14 +453,16 @@ def place(
         One `Placed` per file, in order.
     """
     folder = _folder_format(source, route, category, options)
-    # A category the folder value leaves out keeps its default place, under `{target}`; its
+    # A category the folder value leaves out keeps its default place, under the root; its
     # history key still reads the path as the default place gives it.
     fallback = _falls_back(category, options)
     # A single post (a link) sits in its owner's folder: `{target}` is the owner, whatever
     # template its category has; with no owner it is the post's id, where it always went.
-    owned = (_rooted(source, target, options) and not (route is not None and route.categories))
-    if owned and not fallback:
-        folder = f"{{target}}/{folder}" if folder else "{target}"
+    owned = _owned(source, target, options)
+    root = source.root
+    named = options is not None and options.folder is not None and not fallback
+    if not fallback and (owned or (root != ROOT and not named)):
+        folder = f"{root}/{folder}" if folder else root
     filename, key = (_format(source, category, name) for name in ("filename", "key"))
     posted = day(post.date)
     placed: list[Placed] = []
@@ -479,7 +483,8 @@ def place(
             name = f"{PurePosixPath(name).stem}_{num}{PurePosixPath(name).suffix}"
             path = "/".join(part for part in (where, name) if part)
         used.add(path)
-        kept = path.partition("/")[2] if fallback and values["target"] and "/" in path else path
+        lead = fill(root, values) if fallback else ""
+        kept = "/".join(path.split("/")[len(lead.split("/")):]) if lead and "/" in path else path
         where_kept, _, file_kept = kept.rpartition("/")
         resolved_key = fill(key, {**values, "path": kept, "dir": where_kept, "file": file_kept},
                             safe=False) or kept
@@ -577,7 +582,7 @@ class Ledger:
         self._link_warned = False
         # Whether a post with no owner is yet to be told of: a single post filed by owner.
         # A plugin with no profile route has no owners to find, so it never says so.
-        self._ownerless = (_rooted(self.source, target, options)
+        self._ownerless = (_owned(self.source, target, options)
                            and not (self._route is not None and self._route.categories)
                            and any(r.categories for r in self.source.routes))
         self._later: list[tuple[Path, str, str]] = []
@@ -1374,7 +1379,7 @@ async def download(run: PluginRun, target: Target, tally: Tally, options: Option
     started = time.monotonic()
     # No lock on the target: the home's one run owns every part. The sweep runs while the
     # listing starts, and ends before the first file is handed over.
-    sweep_dir = _sweep_folder(run.settings.home, target, options)
+    sweep_dir = _sweep_folder(run.settings.home, run.source, target, options)
     sweeping = (asyncio.ensure_future(run.off(files.sweep, sweep_dir))
                 if sweep_dir is not None else None)
     site = _site(run, target, options.since, options.until, again=options.again)
@@ -2447,15 +2452,20 @@ def _route_of(source: Plugin | None, target: Target | None) -> Route | None:
     return next((r for r in source.routes if r.kind == target.kind), None)
 
 
-def _rooted(source: Plugin | None, target: Target | None, options: Options | None) -> bool:
-    """Whether a single post (not a search's hit) is filed from `media/<plugin>/`: its route is
-    a single one with no categories, or its folder starts with `{author}`."""
+def _owned(source: Plugin | None, target: Target | None, options: Options | None) -> bool:
+    """Whether a target is a single post (not a search's hit) filed by its owner: its route is
+    a single one with no categories."""
     route = _route_of(source, target)
-    if route is None or source is None or not route.single:
+    return (route is not None and route.single and not route.categories
+            and not (options is not None and options.query))
+
+
+def _rooted(source: Plugin | None, target: Target | None, options: Options | None) -> bool:
+    """Whether a target's files are filed from `media/<plugin>/`: the plugin names its target's
+    folder (`root`), or the target is a single post filed by its owner."""
+    if source is None or target is None:
         return False
-    if _plugin_folder(source, route, None).startswith("{author}"):
-        return True
-    return not route.categories and not (options is not None and options.query)
+    return source.root != ROOT or _owned(source, target, options)
 
 
 def checked_dest(root: Path, relative: str, *, check: bool = False) -> Path:
@@ -2472,13 +2482,18 @@ def checked_dest(root: Path, relative: str, *, check: bool = False) -> Path:
     return dest
 
 
-def _sweep_folder(home: Path, target: Target, options: Options) -> Path | None:
+def _sweep_folder(home: Path, source: Plugin, target: Target, options: Options) -> Path | None:
     """The folder whose stale parts `download` sweeps; None skips sweeping the plugin root."""
-    if options.folder is None:
+    if options.folder is None and source.root == ROOT:
         return store.target_folder(home, target)
-    table = _table(options.folder)
-    # A category the value leaves out is placed under `{target}`: nothing is common then.
-    templates = list(table.values()) if config.ANY in table else [*table.values(), "{target}"]
+    if options.folder is None:
+        # The root's own literal start; a root of post fields has none, and nothing is swept.
+        templates = [source.root]
+    else:
+        table = _table(options.folder)
+        # A category the value leaves out is placed under the root: nothing is common then.
+        templates = (list(table.values()) if config.ANY in table
+                     else [*table.values(), source.root])
     prefixes = []
     for template in templates:
         prefix: list[str] = []
@@ -2538,7 +2553,7 @@ def _folder_format(
             return found
     own = _plugin_folder(source, route, category)
     if options is not None and options.folder is not None:
-        return f"{{target}}/{own}" if own else "{target}"
+        return f"{source.root}/{own}" if own else source.root
     return own
 
 

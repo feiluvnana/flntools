@@ -1273,7 +1273,10 @@ class Plugin:
     user_agent: ClassVar[str | None] = None
     # URL paths meaning "log in" or a stopped login, matched by whole path segments.
     walls: ClassVar[tuple[str, ...]] = ()
-    # The templates of a file's folder under the target's ("" is the target's own), its name,
+    # The template of a target's own folder under `media/<code>/`, filled per file with the same
+    # fields as `folder`. A single post's `{target}` is its owner, else its id.
+    root: ClassVar[str] = "{target}"
+    # The templates of a file's folder under the root ("" is the root itself), its name,
     # and its history key.
     folder: ClassVar[str] = "{category}"
     filename: ClassVar[str] = "{post}_{num}"

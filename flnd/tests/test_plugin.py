@@ -1141,6 +1141,66 @@ class Artworks(Plugin):
         yield Post("p1", [File(f"{CDN_URL}/p1.jpg")])
 
 
+class Rooted(Plugin):
+    """A plugin that names its targets' folders by the target and a post field."""
+
+    code = "exr"
+    name = "Rooted"
+    domains = ("rooted.example",)
+    root = "{target}_{name}"
+    filename = "{post}_{num}"
+    fields = ("name",)
+    # Set by each test: the name the posts carry.
+    given = "Example"
+
+    @route("rooted.example/p/{id:\\w+}", single=True)
+    async def post(self, ctx, id):
+        yield Post(id, [File(f"{CDN_URL}/p1.jpg")], owner="example_user", category="posts",
+                   name=self.given)
+
+    @route("exr:{user}")
+    async def user(self, ctx, user):
+        return {"user": user}
+
+    @user.category
+    async def posts(self, ctx, profile):
+        yield Post("p1", [File(f"{CDN_URL}/p1.jpg")], name=self.given)
+
+
+class RootTest(EngineCase):
+    def saved(self, target, given="Example", **options):
+        self.routes[f"{CDN_URL}/p1.jpg"] = _net.reply(200, content=JPEG)
+        with mock.patch.object(Rooted, "given", given):
+            self.run_engine(Rooted, targets=[target], options=Options(**options))
+        folder = self.home / "media" / "exr"
+        return sorted(path.relative_to(folder).as_posix() for path in folder.rglob("*")
+                      if path.is_file() and not path.name.endswith(".json"))
+
+    def test_a_root_names_a_profiles_and_a_single_posts_folder(self):
+        for target, given, expected in [
+            ("exr:example_user", "Example", "example_user_Example/posts/p1_0.jpg"),
+            ("https://rooted.example/p/p1", "Example", "example_user_Example/posts/p1_0.jpg"),
+            ("exr:example_user", "", "example_user/posts/p1_0.jpg"),
+            ("https://rooted.example/p/p1", "", "example_user/posts/p1_0.jpg"),
+        ]:
+            with self.subTest(target=target, name=given):
+                self.assertEqual(self.saved(target, given), [expected])
+                shutil.rmtree(self.home)
+
+    def test_a_folder_value_replaces_the_root_and_the_rest_keeps_it(self):
+        self.assertEqual(self.saved("exr:example_user", folder="posts:x/{category}"),
+                         ["x/posts/p1_0.jpg"])
+        shutil.rmtree(self.home)
+        self.assertEqual(self.saved("exr:example_user", folder="reels:x"),
+                         ["example_user_Example/posts/p1_0.jpg"])
+
+    def test_a_root_of_post_fields_sweeps_nothing(self):
+        from flnd.engine import crawl
+        options = Options()
+        self.assertIsNone(crawl._sweep_folder(self.home, Rooted(), Target("exr:example_user"),
+                                              options))
+
+
 class SingleRouteTest(EngineCase):
     def test_any_single_route_files_its_post_by_owner(self):
         self.routes[f"{CDN_URL}/p1.jpg"] = _net.reply(200, content=JPEG)

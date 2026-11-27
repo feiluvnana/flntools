@@ -1002,7 +1002,8 @@ def _placed(ctx: FakeCtx, route: flnd.plugin.Route, category: flnd.plugin.Catego
     folder = next(template for template in (category and category.folder, route.folder,
                                             plugin.folder) if template is not None)
     key = category.key if category is not None and category.key is not None else plugin.key
-    named = text.fields(folder) | text.fields(plugin.filename) | text.fields(key)
+    named = (text.fields(plugin.root) | text.fields(folder) | text.fields(plugin.filename)
+             | text.fields(key))
     missing = sorted(named & set(plugin.fields) - set(post.fields))
     if missing:
         raise PluginError(f"{plugin.code}: post {post.id} gives no {', '.join(missing)}, "

@@ -94,7 +94,8 @@ class Loibus(Plugin):
     pace = 1.5
     limits = {"api.moegoat.com": 2}
     # Everything sits in the post's folder: previews, info.md, the archives' files.
-    folder = "{author}/{post} {title}"
+    root = "{author}"
+    folder = "{post} {title}"
     fields = ("author", "title", "part")
     # Every file is named by its post (`File.name`), so this template is never used.
     filename = "{post}"
