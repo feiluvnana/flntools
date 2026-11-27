@@ -107,6 +107,24 @@ class LoginTest(AuthCase):
                           "export the cookies from a browser where you are logged in"))
         self.assertFalse(self.logins.exists())
 
+    def test_a_login_cookie_may_match_a_pattern(self):
+        plugin = make_plugin("aaa", login=login_cookies(match=r".+_user"))
+        line = ".aaa.example\tTRUE\t/\tTRUE\t{}\t{}\tv\n"
+        head = "# Netscape HTTP Cookie File\n"
+        self.export.write_text(head + line.format(ENDS, "abc_user"))
+        auth.login(self.home, plugin(), "file", path=self.export)
+        self.assertTrue((self.logins / "aaa.txt").is_file())
+        self.assertEqual(auth.entry("aaa", plugin).status, "ok")
+        self.export.write_text(head + line.format(ENDS, "other"))
+        with self.assertRaises(LoginError) as raised:
+            auth.login(self.home, plugin(), "file", path=self.export)
+        self.assertEqual(str(raised.exception),
+                         "aaa: no login cookie (a name matching .+_user) in cookies.txt")
+        self.export.write_text(head + line.format(ENDS - 400_000_000, "abc_user"))
+        with mock.patch.object(clock, "wall", lambda: ENDS - 100_000_000), \
+                self.assertRaisesRegex(LoginError, "the login in cookies.txt has expired"):
+            auth.login(self.home, plugin(), "file", path=self.export)
+
     def test_the_other_refusals_name_themselves_and_keep_nothing(self):
         table = [("file", {}, UsageError, "needs the cookie file's path"),
                  ("qr", {}, UsageError, "logs in by file"),

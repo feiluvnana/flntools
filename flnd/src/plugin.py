@@ -859,6 +859,8 @@ class Login:
     methods: ClassVar[tuple[str, ...]] = ()
     # The cookies, any one of which proves a login; empty for a login that keeps none.
     names: tuple[str, ...] = ()
+    # A regular expression a login cookie's whole name may match instead; None for no pattern.
+    pattern: re.Pattern[str] | None = None
 
     def __init__(self, *, required: bool = True) -> None:
         self.required = required
@@ -871,30 +873,55 @@ class Login:
         """
         raise NotImplementedError(f"{type(self).__name__}.start")
 
+    def proves(self, name: str) -> bool:
+        """Whether a cookie of this name proves a login: one of `names`, or a full `pattern` match.
+
+        The one place that decides; the engine asks here for expiry, refusals and status.
+        """
+        return name in self.names or (
+            self.pattern is not None and self.pattern.fullmatch(name) is not None)
+
+    @property
+    def label(self) -> str:
+        """The login cookies as people read them: `sid, token` or `a name matching .+_user`."""
+        parts = list(self.names)
+        if self.pattern is not None:
+            parts.append(f"a name matching {self.pattern.pattern}")
+        return ", ".join(parts)
+
     async def check(self, ctx: Ctx) -> bool:
-        """Whether the plugin is logged in; by default, whether one of `names` is a cookie."""
-        return any(name in ctx.cookies for name in self.names)
+        """Whether the plugin is logged in; by default, whether a cookie proves it."""
+        return any(self.proves(name) for name in ctx.cookies)
 
 
 class Cookies(Login):
-    """The login of a cookie site, made by `cookies(...)`: logged in when one of `names` is set.
+    """The login of a cookie site, made by `cookies(...)`: logged in when one of `names` is set
+    or a cookie's whole name matches `match`.
 
     Args:
         *names: the cookies, any one of which proves a login.
+        match: a regular expression, fully matched against cookie names.
         required: whether the plugin can list nothing without it.
 
     Raises:
-        PluginError: no cookie names.
+        PluginError: neither names nor a match, or a match that isn't a regular expression.
     """
 
     methods: ClassVar[tuple[str, ...]] = COOKIE_METHODS
 
-    def __init__(self, *names: str, required: bool = False) -> None:
+    def __init__(self, *names: str, match: str | None = None, required: bool = False) -> None:
         super().__init__(required=required)
-        if not names or not all(isinstance(name, str) and name for name in names):
+        if (not names and match is None) or not all(
+                isinstance(name, str) and name for name in names):
             raise PluginError('cookies() takes the cookie names that prove a login: '
                               'cookies("sessionid")')
         self.names = tuple(names)
+        if match is not None:
+            try:
+                self.pattern = re.compile(match)
+            except (re.error, TypeError) as error:
+                raise PluginError(f"cookies(match={match!r}) isn't a regular expression: "
+                                  f"{error}") from None
 
     async def start(self, ctx: Ctx, method: str) -> None:
         """Never called: the engine reads a cookie login itself.
@@ -905,14 +932,15 @@ class Cookies(Login):
         raise UsageError(f"{method}: cookies are read from a cookies.txt file")
 
 
-def cookies(*names: str, required: bool = False) -> Cookies:
+def cookies(*names: str, match: str | None = None, required: bool = False) -> Cookies:
     """The login of a cookie site: logged in when one of these cookies is set.
 
     Args:
         *names: the cookies, any one of which proves a login.
+        match: a regular expression; a cookie whose whole name matches it proves a login too.
         required: whether the plugin can list nothing without them.
     """
-    return Cookies(*names, required=required)
+    return Cookies(*names, match=match, required=required)
 
 
 # ---------------------------------------------------------------------------------------------

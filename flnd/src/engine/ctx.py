@@ -1394,7 +1394,7 @@ def scheduler(settings: RunShared) -> jobs.Scheduler | None:
 
 
 def _warn_expiring(plugin: Plugin, jar: Any) -> None:
-    """Warn of login cookies (the login's `names`) that have expired or will expire soon."""
+    """Warn of login cookies (those the login proves) that have expired or will expire soon."""
     for name, left in auth.expiring(plugin, jar, within=EXPIRY_WARNING):
         if left <= 0:
             ui.warn("{code}: the login cookie {name} has expired; run flnd auth login {code} again",

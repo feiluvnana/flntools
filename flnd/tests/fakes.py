@@ -239,9 +239,10 @@ def make_plugin(code, route=None, *, files: Any = (), **declared):
     return type(f"Plugin_{code}", (plugin.Plugin,), attributes)
 
 
-def login_cookies(*names: str, required: bool = False) -> plugin.Cookies:
+def login_cookies(*names: str, match: str | None = None,
+                  required: bool = False) -> plugin.Cookies:
     """A cookie login of a test plugin: `flnd.plugin.cookies`."""
-    return plugin.cookies(*names, required=required)
+    return plugin.cookies(*names, match=match, required=required)
 
 
 def own_login(start=None, *, methods=("qr",), check=None):

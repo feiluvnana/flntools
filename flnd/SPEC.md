@@ -639,7 +639,8 @@ its own way instead, named in `Login.methods`; the cookie file is the built-in p
   `logins/<code>.txt` (mode 0600, written through a temp file and an atomic replace), and replaces
   any earlier login. It is refused unless one of the plugin's login cookies is there, and unless
   one of them is still good (a session cookie always is). A cookie plugin's login cookies are in
-  [Plugins](#plugins).
+  [Plugins](#plugins). A plugin declares them as `cookies("sessionid", "ds_user_id")`, and
+  `cookies(match=r".+_user")` also accepts any cookie whose whole name matches the expression.
 - a plugin's own login keeps what its `Login.start` wrote to `ctx.secrets` in
   `logins/<code>.json` (mode 0600), which `ctx.secrets` reads. A cookie's value or a secret is
   never printed, logged or put in an error: messages name the file, the line or the cookie.
@@ -651,8 +652,8 @@ Refusals:
 - a plugin with no login (`mht`, `web`): `<code> needs no login`
 - no readable file: `<code>: a file login needs the path of a cookie file`, hint `flnd auth login
   <code> <file>`; on a pipe, `<code>: which cookie file?`
-- no login cookie: `<code>: no login cookie (<names>) in <file>`, hint `export the cookies from a
-  browser where you are logged in`
+- no login cookie: `<code>: no login cookie (<names>) in <file>` (`a name matching <pattern>` for a
+  `match`), hint `export the cookies from a browser where you are logged in`
 - every login cookie expired: `<code>: the login in <file> has expired`, hint `export a fresh
   cookie file`
 

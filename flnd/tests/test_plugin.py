@@ -503,6 +503,24 @@ class HooksTest(unittest.TestCase):
         with self.assertRaisesRegex(PluginError, r"takes the cookie names"):
             cookies()
 
+    def test_a_login_can_match_cookie_names_by_pattern(self):
+        class Jar:
+            cookies = {"abc_user": "1"}
+
+        login = cookies(match=r".+_user")
+        self.assertEqual((login.names, login.label), ((), "a name matching .+_user"))
+        self.assertEqual([login.proves(name) for name in ("abc_user", "_user", "abc_user2")],
+                         [True, False, False])
+        self.assertTrue(run(login.check(Jar())))
+        self.assertFalse(run(cookies(match=r".+_user").check(type("J", (), {"cookies": {}})())))
+        mixed = cookies("sid", match=r"x_.+")
+        self.assertEqual((mixed.proves("sid"), mixed.proves("x_a"), mixed.label),
+                         (True, True, "sid, a name matching x_.+"))
+        with self.assertRaisesRegex(PluginError, r"takes the cookie names"):
+            cookies(match=None)
+        with self.assertRaisesRegex(PluginError, r"match='\(.\) isn't a regular expression"):
+            cookies(match="(")
+
     def test_settings_subclasses_are_frozen_keyword_only_dataclasses(self):
         class Own(Settings):
             """Example's keys.

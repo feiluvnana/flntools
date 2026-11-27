@@ -8,7 +8,7 @@ from __future__ import annotations
 import datetime
 import json
 import os
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping
 from http.cookiejar import Cookie
 from pathlib import Path
 from typing import Any
@@ -126,11 +126,16 @@ def secrets(code: str) -> dict[str, str]:
     return {str(name): str(value) for name, value in kept.items()}
 
 
-def _ends(plugin_names: Sequence[str], jar: Iterable[Mapping[str, Any]]) -> list[float]:
-    """When the login cookies in `jar` (those of `plugin_names`) end, in Unix seconds; a
+def _proves(plugin: Plugin | type[Plugin]) -> Callable[[str], bool]:
+    """The plugin's test for a login cookie's name; never true for a plugin without a login."""
+    return getattr(plugin.login, "proves", lambda name: False)
+
+
+def _ends(proves: Callable[[str], bool], jar: Iterable[Mapping[str, Any]]) -> list[float]:
+    """When the login cookies in `jar` (those the login `proves`) end, in Unix seconds; a
     session cookie has no end."""
     return [float(cookie["expires"]) for cookie in jar
-            if cookie.get("name") in plugin_names
+            if proves(str(cookie.get("name")))
             and isinstance(cookie.get("expires"), (int, float)) and cookie["expires"] > 0]
 
 
@@ -151,7 +156,7 @@ def entry(code: str, plugin: Plugin | type[Plugin]) -> LoggedIn | None:
     ends: list[float] = []
     if where.suffix == ".txt":
         try:
-            ends = _ends(getattr(plugin.login, "names", ()), cookies.load(where))
+            ends = _ends(_proves(plugin), cookies.load(where))
         except (OSError, Error):
             return LoggedIn(code, "unreadable", str(where))
     status, expires = "ok", None
@@ -168,12 +173,12 @@ def entry(code: str, plugin: Plugin | type[Plugin]) -> LoggedIn | None:
 
 def expiring(plugin: Plugin, jar: Iterable[Mapping[str, Any]], *,
              within: float) -> list[tuple[str, float]]:
-    """The login's cookies (its `names`) that expire within `within` seconds, each with its
+    """The login's cookies (those it `proves`) that expire within `within` seconds, each with its
     seconds left (0 or less: expired); a session cookie never does."""
-    names = getattr(plugin.login, "names", ())
+    proves = _proves(plugin)
     now = clock.wall()
     return [(str(cookie["name"]), float(cookie["expires"]) - now) for cookie in jar
-            if cookie.get("name") in names and isinstance(cookie.get("expires"), (int, float))
+            if proves(str(cookie.get("name"))) and isinstance(cookie.get("expires"), (int, float))
             and 0 < cookie["expires"] <= now + within]
 
 
@@ -306,11 +311,11 @@ def _read_jar(plugin: Plugin, own: Cookies, *, path: Path | str | None) -> cooki
     except (OSError, ValueError, Error) as error:
         raise LoginError(f"{code}: can't read {where}: {error}") from None
     jar = fix_domains(jar.filter(domains=plugin.domains))
-    if not any(name in jar for name in own.names):
-        raise LoginError(f"{code}: no login cookie ({', '.join(own.names)}) in {where.name}",
+    present = [cookie for cookie in jar if own.proves(str(cookie.get("name")))]
+    if not present:
+        raise LoginError(f"{code}: no login cookie ({own.label}) in {where.name}",
                          hint="export the cookies from a browser where you are logged in")
     now = clock.wall()
-    present = [cookie for cookie in jar if cookie.get("name") in own.names]
     if all(isinstance(cookie.get("expires"), (int, float)) and 0 < cookie["expires"] <= now
            for cookie in present):
         raise LoginError(f"{code}: the login in {where.name} has expired",
