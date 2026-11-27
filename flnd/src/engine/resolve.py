@@ -432,7 +432,7 @@ def _plain(plugin: _Plugin, body: str, known: Mapping[str, Sequence[str]]) -> Re
             route, value = hit
             names = plugin.categories if route.discovers else route.names
             tokens = _tokens(tail)
-            # A catch-all value (`tlg:{chat:.+}`) holds a `|` unless every token is a category.
+            # A catch-all value (`{name:.+}`) holds a `|` unless every token is a category.
             if not isinstance(whole, tuple) or tokens is None or _named(tokens, names):
                 return _made(plugin, route, value, tokens, known)
         elif not isinstance(whole, tuple):

@@ -8,7 +8,7 @@ keeps its own rules in `<project>/AGENTS.md`, and runs its commands inside its o
 - Every message has the form `<action>:<summary>`.
   - `<action>` is one of `feat`, `fix`, `perf`, `refactor`, `docs`, `test`, `chore`, `style`.
   - `<summary>` is lowercase and imperative, with no period at the end.
-  - Example: `fix:flush a telegram part before saving its offsets`.
+  - Example: `fix:flush a download part before saving its offsets`.
 - No co-author trailer, and no other attribution line.
 - Commit as feiluvnana, signed with SSH, through the repo-local git config. Never change the
   global config.

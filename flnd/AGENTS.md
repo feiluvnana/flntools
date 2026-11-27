@@ -62,7 +62,7 @@ src/                 the package flnd
   ui/              imports only flnkit, ui/, engine/events.py and src/errors.py
     theme.py out.py screen.py forms.py log.py
   plugins/         built-ins, importing only flnd.plugin and the standard library
-    __init__.py (the table) fbk.py ins.py loi.py mht.py thr.py tik.py tlg.py twt.py web.py
+    __init__.py (the table) fbk.py ins.py loi.py mht.py thr.py tik.py twt.py web.py
 flnkit/              the standalone package flnkit, imports nothing of flnd
   net.py browser.py files.py html.py dig.py text.py clock.py db.py cookies.py media.py
   stream.py errors.py
@@ -77,8 +77,8 @@ The import rules, checked by `tests/test_layers.py` by reading every file's impo
    `flnkit`, `msgspec` and the standard library.
 4. `src/plugin.py` imports only `flnkit`, `src/errors.py` and the standard library.
    `src/_library.py` imports `src/engine/*`, `flnkit`, `src/errors.py` and `src/plugin.py`.
-5. `src/plugins/*` imports only `flnd.plugin` and the standard library, plus its own SDK
-   (`telethon`, `qrcode`), imported inside a function.
+5. `src/plugins/*` imports only `flnd.plugin` and the standard library, plus its own SDK, if it has
+   one (`loi` has `cryptography`), imported inside a function.
 6. `src/cli.py` imports only `flnd` (its version), `src/ui/*`, `src/plugins/__init__.py`,
    `flnd._library`, `flnd.errors`, `flnd.engine.events` and `flnd.engine.run` (the run's type).
 7. `src/__init__.py` imports nothing at import time beyond the standard library.
@@ -159,8 +159,7 @@ Stopped(KeyboardInterrupt)  Ctrl-C; exit 130
 
 ## Dependencies
 - Each dependency has a reason beside it in `pyproject.toml`.
-- The set is curl_cffi, playwright, selectolax, cryptography, telethon, cryptg, qrcode,
-  rich and msgspec.
+- The set is curl_cffi, playwright, selectolax, cryptography, rich and msgspec.
 
 ## Size
 - The limits live in `tests/test_size.py`: `CODE_LINES` for `src/` and `flnkit/`, and

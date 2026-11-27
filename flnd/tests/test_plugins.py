@@ -21,9 +21,9 @@ from flnkit import text
 
 PLUGINS_DIR = Path(__file__).resolve().parent.parent / "src" / "plugins"
 # The SDKs a built-in plugin may import (inside a function), beside flnd.plugin and the
-# standard library: Telegram's client and QR codes, and LOIBUS's decryption.
-SDKS = ("telethon", "qrcode", "cryptography")
-CODES = ["tik", "fbk", "ins", "thr", "twt", "loi", "tlg", "mht", "web"]
+# standard library: LOIBUS's decryption.
+SDKS = ("cryptography",)
+CODES = ["tik", "fbk", "ins", "thr", "twt", "loi", "mht", "web"]
 
 
 def loaded_after(code: str) -> list[str]:
@@ -140,11 +140,10 @@ class BuiltInTest(unittest.TestCase):
             "twt": (("auth_token",), 2.0, True, False,
                     {"pbs.twimg.com": 4, "video.twimg.com": 4}),
             "loi": (("access-token",), 1.5, True, False, {"api.moegoat.com": 2}),
-            "tlg": ((), 0.5, True, False, {"t.me": 3}),
             "mht": ((), 0.5, True, False, {}),
             "web": ((), 0.5, True, False, {}),
         }
-        logins = {"tlg": ("qr", "phone"), "mht": None, "web": None}
+        logins = {"mht": None, "web": None}
         for code, plugin in built_in().items():
             with self.subTest(plugin=code):
                 self.assertEqual((tuple(getattr(plugin.login, "names", ())), plugin.pace,
@@ -163,7 +162,6 @@ class BuiltInTest(unittest.TestCase):
             "thr": ("posts replies reposts profile", "post"),
             "twt": ("posts media highlights reposts replies profile", "post"),
             "loi": ("archive photo", "post"),
-            "tlg": ("photo video file", ""),
             "mht": ("chapters cover", "chapter"),
             "web": ("", "page"),
         }

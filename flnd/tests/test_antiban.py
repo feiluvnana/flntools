@@ -10,11 +10,11 @@ import unittest
 from plugin_kit import FakeCtx, FakePage, Reply, Sent, collect
 
 from flnd.errors import Blocked, LoginError
-from flnd.plugins import fbk, ins, loi, thr, tik, tlg, twt
+from flnd.plugins import fbk, ins, loi, thr, tik, twt
 
 PLUGINS = {
     "twt": twt.Twitter, "ins": ins.Instagram, "fbk": fbk.Facebook,
-    "thr": thr.Threads, "tik": tik.TikTok, "tlg": tlg.Telegram, "loi": loi.Loibus,
+    "thr": thr.Threads, "tik": tik.TikTok, "loi": loi.Loibus,
 }
 BROWSER_PLUGINS = ("twt", "ins", "fbk", "thr", "tik")
 PACED_PLUGINS = ("twt", "ins", "fbk", "thr", "tik", "loi")
@@ -32,7 +32,6 @@ class AntiBanInvariantsTest(unittest.TestCase):
                 self.assertTrue(plugin.stealth)
                 self.assertIsNone(plugin.user_agent)
         self.assertEqual(twt.Twitter.limits, {"pbs.twimg.com": 4, "video.twimg.com": 4})
-        self.assertLessEqual(tlg.Telegram.limits.get("t.me", 99), 3)
         self.assertLessEqual(loi.Loibus.limits.get("api.moegoat.com", 99), 2)
 
     def test_browser_plugins_declare_lock_walls(self) -> None:
@@ -91,7 +90,7 @@ class TwitterHardeningTest(unittest.TestCase):
 
 
 class PlatformHardeningTest(unittest.TestCase):
-    """Anti-ban hardening checks for ins, fbk, thr, tik, tlg, and loi."""
+    """Anti-ban hardening checks for ins, fbk, thr, tik, and loi."""
 
     def test_ins_extra_lock_walls_and_story_page_checks(self) -> None:
         for wall_path in ("/accounts/two_factor", "/auth_platform"):
@@ -180,18 +179,6 @@ class PlatformHardeningTest(unittest.TestCase):
         with self.assertRaises(Blocked) as caught2:
             collect(tik.TikTok, "tik:example_creator", ctx=ctx2, categories=["reposts"])
         self.assertFalse(caught2.exception.retryable)
-
-    def test_tlg_fatal_auth_and_peer_flood_rpc_errors(self) -> None:
-        for name in ("UserDeactivatedError", "SessionExpiredError", "AuthKeyInvalidError"):
-            with self.subTest(error=name):
-                err = type(name, (Exception,), {})()
-                with self.assertRaises(LoginError) as caught:
-                    tlg._check_auth_rpc(err)
-                self.assertFalse(caught.exception.retryable)
-        peer = type("PeerFloodError", (Exception,), {})()
-        with self.assertRaises(Blocked) as caught_b:
-            tlg._check_auth_rpc(peer)
-        self.assertFalse(caught_b.exception.retryable)
 
     def test_loi_401_aborts_with_login_error(self) -> None:
         for status, body in ((401, {}), (200, {"code": "401", "message": "expired"})):

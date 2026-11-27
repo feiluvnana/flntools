@@ -13,9 +13,6 @@ dependencies = [
     "flnkit[ui,web]",
     # AES for loi's archive links (src/plugins/loi.py).
     "cryptography>=42",
-    "telethon>=1.36",
-    "cryptg>=0.5",
-    "qrcode>=7.4",
     "msgspec",
 ]
 

@@ -458,8 +458,8 @@ class Auth:
         Args:
             plugin: the plugin's code (`"ins"`).
             method: one of the plugin's login methods: `"file"` for a cookies.txt or JSON
-                export (with `path`), or the plugin's own (`"qr"`, `"phone"` for tlg). None
-                takes the only one the plugin has, or `"file"` when `path` is given.
+                export (with `path`), or one the plugin declares itself. None takes the only
+                one the plugin has, or `"file"` when `path` is given.
             path: the cookie file, for `"file"`.
 
         Returns:

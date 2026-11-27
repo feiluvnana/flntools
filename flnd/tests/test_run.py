@@ -181,15 +181,15 @@ class GroupsTest(EngineCase):
     def test_a_group_whose_connect_fails_ends_its_rows_failed(self):
         # Fix 5: before it, only the error line was written and log.group ended the rows at ok.
         def connect(self, ctx):
-            raise LoginError("tlg: the saved login no longer works")
+            raise LoginError("ins: the saved login no longer works")
 
         report = self.report(make_plugin("aaa", connect=connect), make_plugin("bbb"),
                              targets=["aaa:a", "aaa:b", "bbb:c"])
-        self.assertEqual(self.failures(), ["aaa:a: tlg: the saved login no longer works",
-                                           "aaa:b: tlg: the saved login no longer works"])
+        self.assertEqual(self.failures(), ["aaa:a: ins: the saved login no longer works",
+                                           "aaa:b: ins: the saved login no longer works"])
         self.assertEqual(self.listed(), {("bbb:c", "posts")})
         self.assertEqual([str(target) for target in report.failed], ["aaa:a", "aaa:b"])
-        self.assertEqual(str(report.targets[0].error), "tlg: the saved login no longer works")
+        self.assertEqual(str(report.targets[0].error), "ins: the saved login no longer works")
 
     def test_a_group_whose_logged_in_raises_ends_its_rows_failed(self):
         def check(self, ctx):
@@ -644,14 +644,14 @@ class ClientTest(EngineCase):
         async def run(ctx):
             loops.append(asyncio.get_running_loop())
             await asyncio.sleep(0)
-            return "telethon"
+            return "client"
 
         source = make_plugin("aaa", run, connect=connect, files=lambda ctx, client: [
             File(fetch=fetch, name=f"{client}.bin")])
         self.assertEqual(self.run_engine(source, targets=["aaa:a"]), 1)
         self.assertEqual(len(set(map(id, loops))), 1)
         self.assertEqual(len(loops), 3)
-        self.assertEqual((self.target_dir("aaa", "a") / "telethon.bin").read_bytes(), b"media")
+        self.assertEqual((self.target_dir("aaa", "a") / "client.bin").read_bytes(), b"media")
 
     def test_a_run_saves_more_fetch_files_than_the_pool_queues(self):
         # Each fetch needs the run's loop, so a save made on that loop must never wait for the pool.

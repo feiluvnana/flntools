@@ -27,7 +27,6 @@ TABLE = (
     Entry("thr", "flnd.plugins.thr", "Threads", ("threads.com", "threads.net")),
     Entry("twt", "flnd.plugins.twt", "Twitter", ("x.com", "twitter.com")),
     Entry("loi", "flnd.plugins.loi", "Loibus", ("loix.cc", "moegoat.com")),
-    Entry("tlg", "flnd.plugins.tlg", "Telegram", ("t.me", "telegram.org")),
     Entry("mht", "flnd.plugins.mht", "Mimi", ("mimihentai.moe",)),
     Entry("web", "flnd.plugins.web", "Web", ()),
 )

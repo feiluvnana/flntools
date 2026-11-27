@@ -119,9 +119,9 @@ flnd auth login ins cookies.txt
 flnd auth list
 ```
 
-Give it a cookie file exported from a browser where you are logged in; Telegram takes `qr` or
-`phone` instead. Logging in again replaces the login, `flnd auth list` shows each login and
-when it expires, and `flnd auth logout ins` deletes one.
+Give it a cookie file exported from a browser where you are logged in; a plugin may
+declare its own way instead. Logging in again replaces the login, `flnd auth list` shows each
+login and when it expires, and `flnd auth logout ins` deletes one.
 More: [Logins](SPEC.md#logins).
 
 ## Fix a failed run

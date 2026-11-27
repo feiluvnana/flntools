@@ -661,14 +661,13 @@ class HelpTest(FlndCase):
         for verb in ("get ", "target list|follow|unfollow|retry|clean", "auth list|login|logout",
                      "status", "config"):
             self.assertIn(f"  {verb}", text)
-        self.assertIn("tik fbk ins thr twt loi tlg mht", text)
+        self.assertIn("tik fbk ins thr twt loi mht", text)
         self.assertEqual(self.run_app()[1], text)
 
     def test_get_help_has_a_row_per_plugin_and_its_flags(self):
         code, text, _ = self.run_app("get", "--help")
         self.assertEqual(code, 0)
         flat = " ".join(text.split())
-        self.assertIn("tlg:<@username, chat title or id>, tlg:@<chat>, a link on t.me", flat)
         self.assertIn("|posts,reels,tagged", flat)
         for flag in ("--when", "--limit", "--dry", "--again", "--home"):
             self.assertIn(flag, text)
@@ -737,15 +736,15 @@ class AuthTest(FlndCase):
 
         sign_in("ins", [{"name": "sessionid", "value": "secret-val",
                          "domain": ".instagram.com", "expires": time.time() - 10}])
-        sign_in("tlg", session="s")
+        sign_in("twt", session="s")
         code, text, _ = self.run_app("auth", "list")
         self.assertEqual(code, 0)
         self.assertRegex(text, r"ins +expired +\S*ins\.txt")
-        self.assertRegex(text, r"tlg +ok +\S*tlg\.json")
+        self.assertRegex(text, r"twt +ok +\S*twt\.json")
         self.assertNotIn("secret-val", text)
         self.assertEqual(self.run_app("auth", "logout", "ins")[1], "ins: logged out\n")
         self.assertEqual(kept_login("ins")[0].list, [])
-        self.assertEqual([row.plugin for row in _flnd_auth_rows()], ["tlg"])
+        self.assertEqual([row.plugin for row in _flnd_auth_rows()], ["twt"])
         for argv in (("ins",), ("ytb",)):
             with self.subTest(argv=argv):
                 self.assertEqual(self.run_app("auth", "logout", *argv)[0], 2)

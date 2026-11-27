@@ -87,14 +87,6 @@ class AcceptedFormsTest(unittest.TestCase):
                     ("loix.cc/lois/5930", post), ("loi:author/183", author),
                     ("https://loix.cc/library/loier/183", author)])
 
-    def test_tlg(self):
-        self.check([("tlg:@examplechannel", Target("tlg:examplechannel", kind="chat")),
-                    ("https://t.me/examplechannel", Target("tlg:examplechannel", kind="chat")),
-                    ("tlg:Lens Club", Target("tlg:Lens Club", kind="chat")),
-                    ("tlg:-1001234567890", Target("tlg:-1001234567890", kind="chat")),
-                    ("https://t.me/c/1234567890/55", Target("tlg:-1001234567890", kind="chat")),
-                    ("https://t.me/+AbCdEf123", Target("tlg:+AbCdEf123", kind="chat"))])
-
     def test_codes_are_case_insensitive_and_trimmed(self):
         self.assertEqual(read(" INS:example_user "), Target("ins:example_user", kind="user"))
 

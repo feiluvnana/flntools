@@ -359,7 +359,7 @@ def auth_login(args: argparse.Namespace) -> int:
     """Log in to a plugin, and keep the login in the logins folder.
 
     HOW is the cookie file (a cookies.txt or JSON export) for a cookie plugin, or the
-    plugin's own way (tlg: qr, phone). A cookie file left out in a terminal is asked.
+    plugin's own way, when it declares one. A cookie file left out in a terminal is asked.
 
     Args:
         args: the parsed flags.
@@ -624,7 +624,7 @@ def parser() -> argparse.ArgumentParser:
     sub = command(logins, "login", auth_login)
     sub.add_argument("plugin", help="the plugin's code (ins)")
     sub.add_argument("how", nargs="?", metavar="file",
-                     help="the cookie file's path; for tlg, its way (qr, phone)")
+                     help="the cookie file's path, or the plugin's own way to log in")
     sub = command(logins, "logout", auth_logout)
     sub.add_argument("plugin", help="the plugin's code (ins)")
 

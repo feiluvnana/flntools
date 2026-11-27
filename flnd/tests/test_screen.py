@@ -118,13 +118,13 @@ class FrameTest(unittest.TestCase):
         self.assertRegex(rows[-1], r"^  – · 1 saved · 0 failed")
 
     def test_cells_not_characters_bound_a_wide_label(self) -> None:
-        wide = "tlg:" + "频道" * 20
+        wide = "web:" + "频道" * 20
         for cut, cells in ((screen.middle, 28), (screen.left, 24)):
             with self.subTest(cut.__name__):
                 self.assertLessEqual(cell_len(cut(wide, cells)), cells)
                 self.assertGreaterEqual(cell_len(cut(wide, cells)), cells - 1)
         state = State(targets=(TargetState(wide, ("posts",), Phase.LISTING),))
-        row = next(line for line in draw(state) if "tlg:" in line)
+        row = next(line for line in draw(state) if "web:" in line)
         long = TargetState("ins:" + "x" * 40, ("posts",), Phase.LISTING)
         narrow = draw(State(targets=(long,)))
         # The categories start in the same cell after a wide label as after a narrow one.

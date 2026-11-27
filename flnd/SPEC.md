@@ -19,7 +19,7 @@ flnd needs [uv](https://docs.astral.sh/uv/) and Python 3.11 or newer.
 ```sh
 git clone https://github.com/feiluvnana/flntools
 cd flntools
-uv tool install -e ./flnd        # puts `flnd` on your PATH, Telegram support included
+uv tool install -e ./flnd        # puts `flnd` on your PATH
 ```
 
 From a checkout, `make setup` (inside `flnd/`) makes `.venv`, then `uv run flnd ...` runs it. On
@@ -108,8 +108,8 @@ How a target is read, in order:
    is its categories when every word in it is `all` or a category of the plugin that owns it
    (`instagram.com/example_user|tagged`); else it stays in the link.
 4. **`<code>:<value>`** is split at its last `|`: the part after it is the list of categories. A
-   route that reads any text (a Telegram title) splits only when every word after the `|` is a
-   category or `all`, so `tlg:Fans|Lens` stays whole. A one-post route given a list is
+   route that reads any text (a free title) splits only when every word after the `|` is a
+   category or `all`, so `abc:Fans|Lens` stays whole. A one-post route given a list is
    `<code>:<kind>/<id> is one post, with no categories`. The old written form,
    `<code>:<value>/<categories>`, is refused with the hint `write the categories after |:
    "ins:example_user|tagged"`.
@@ -131,7 +131,7 @@ Refusals, with the text printed (all `UsageError`, exit 2, before any request):
 - (empty): `a target can't be empty`
 - `example_user`: `which plugin is "example_user"? Write it as tik:example_user, fbk:example_user,
   ins:example_user, ...`
-- `nope:x`: `no plugin named nope`; hint `Plugins: tik, fbk, ins, thr, twt, loi, tlg, mht, web`
+- `nope:x`: `no plugin named nope`; hint `Plugins: tik, fbk, ins, thr, twt, loi, mht, web`
 - `ins:`: `ins: write a value after ins:`; hint `Write it like <every form of the plugin>`
 - `ins:%`: `ins: can't read '%'`; hint `Write it like <every form of the plugin>`
 - `ins:example_user|nope`: `ins has no category nope`; hint `Categories: posts, reels, tagged,
@@ -249,18 +249,6 @@ watch reel reels videos photo photo.php permalink.php story.php login login.php`
 without `fbid`, `permalink.php` without both ids: `fbk: can't read <link>`. Any other path after
 a profile name is ignored.
 
-**tlg**
-
-Every form is route ``chat``:
-
-- `tlg:@<username>` or `tlg:<username>` (4 to 32 characters, a letter first): a chat
-- `tlg:<title or id>` (`tlg:Example Chat`, `tlg:-1001234567890`): a chat among yours
-- `t.me/<username>`, `t.me/s/<username>`, `t.me/+<invite>`, `t.me/joinchat/<invite>`: a chat
-- `t.me/c/<id>` (read as `-100<id>`): a private chat
-
-A message number at the end of a link is ignored. Refused: `tlg:@abc` (a username under 4
-characters), `t.me/` alone, `web.telegram.org` links: `tlg: can't read <text>`.
-
 **loi**
 
 | Form | Route | Reads |
@@ -338,8 +326,7 @@ How a date is compared:
 - A listing that comes newest first stops after 5 posts in a row older than `since`; pinned posts do
   not count. `until` never stops a listing: newer posts are skipped one by one.
 - A target whose posts carry no date at all (`web`) is read whole: `--when` keeps everything.
-- `twt` searches also send `--when` to X as `since:` and `until:`; `tlg` starts its listing after
-  the last day.
+- `twt` searches also send `--when` to X as `since:` and `until:`.
 
 ## Categories
 
@@ -354,7 +341,6 @@ A category is one part of a target that can be got alone. Each plugin's list is 
 | `twt` | `posts media highlights replies profile` | `reposts` |
 | `tik` | `videos stories playlists profile` | `reposts liked favorites` |
 | `fbk` | `posts highlights photos albums reels videos stories profile` | `tagged` |
-| `tlg` | `photo video file` | none |
 | `loi` | `archive photo` | none |
 | `mht` | `chapters cover` | none |
 | `web` | none | none |
@@ -455,8 +441,8 @@ segment  = text and {field} / {field:format} / {field.attr} / {field[0]}; {{ and
 | `path` | accepted, but only filled in `key` templates; empty in a folder |
 | plugin fields | each plugin's `fields`, listed below the table |
 
-Plugin fields: `ins` `album`; `twt` `part n`; `tik` `part album idx`; `fbk` `part album`; `tlg`
-`chat chat_id`; `loi` `author title part`; `mht` `title order author genres chapters`; `web` `name`;
+Plugin fields: `ins` `album`; `twt` `part n`; `tik` `part album idx`; `fbk` `part album`;
+`loi` `author title part`; `mht` `title order author genres chapters`; `web` `name`;
 a plugin of your own declares its `fields`.
 
 Rendering: each `/` segment is filled alone. A missing or empty field drops the separators
@@ -646,18 +632,17 @@ One login per plugin, kept as a file in the logins folder `~/.config/flnd/logins
 by every home and never inside one, so a copied home carries no login.
 
 `flnd auth login <plugin> [file]` logs in. For a cookie plugin it takes the path of a Netscape
-`cookies.txt` or a JSON cookie export, left out on a terminal it asks for it. Telegram takes its own
-way instead: `qr` (the default) shows a QR code to scan, `phone` asks for your number and the code
-Telegram sends.
+`cookies.txt` or a JSON cookie export, left out on a terminal it asks for it. A plugin may declare
+its own way instead, named in `Login.methods`; the cookie file is the built-in plugins' way.
 
 - a cookie login keeps only the cookies of the plugin's domains, as Netscape text, in
   `logins/<code>.txt` (mode 0600, written through a temp file and an atomic replace), and replaces
   any earlier login. It is refused unless one of the plugin's login cookies is there, and unless
   one of them is still good (a session cookie always is). A cookie plugin's login cookies are in
   [Plugins](#plugins).
-- Telegram keeps its session, `api_id` and `api_hash` in `logins/tlg.json` (mode 0600), which is
-  what `ctx.secrets` reads. A cookie's value or a secret is never printed, logged or put in an
-  error: messages name the file, the line or the cookie.
+- a plugin's own login keeps what its `Login.start` wrote to `ctx.secrets` in
+  `logins/<code>.json` (mode 0600), which `ctx.secrets` reads. A cookie's value or a secret is
+  never printed, logged or put in an error: messages name the file, the line or the cookie.
 
 Refusals:
 
@@ -1041,26 +1026,6 @@ up to 32.
   without a header `stories` and `profile` are skipped; undated photos take a neighbour's date.
 - **Saved as:** `media/fbk/example.page/photos/2026-01-02_1234567890.jpg`,
   `media/fbk/example.page/albums/Holiday/2026-01-02_1234567891.jpg`
-
-### tlg (Telegram)
-
-- **Reads:** the photos, videos and other files of a chat, group or channel your account can see,
-  through Telethon (MTProto), never a web page. Documents of 16 MiB or more are fetched in up to 4
-  parts; a part keeps its offsets in `.part.json` and resumes.
-- **Categories:** `photo`, `video`, `file`, all NF and own, each read with a server-side filter.
-- **Folder:** `{chat}/{category}`; `chat` is the title, a person's name, else username or id.
-- **Filename:** the plugin's: `<date>_<message id>` then `_<original name>` or the extension.
-- **Key:** `{chat_id}:{post}` (`tlg:<chat id>:<message id>`).
-- **Login:** a Telegram session, required. Methods `qr`, `phone`; asks once for `api_id` and
-  `api_hash` from
-  `my.telegram.org`. Without one: `tlg: not logged in`; a revoked session: `tlg: the saved login no
-  longer works`.
-- **Limits and walls:** `limits = {"t.me": 3}`; pace does not apply. A flood wait up to 60 s is
-  slept; a longer one is a block hold (30 s, 2 min, 8 min) and listing resumes after it.
-- **Known gaps:** an invite you have not joined is `NotFound` (`join it first`), flnd never joins; a
-  private or left chat is `Hidden`; a message link downloads the whole chat; two chats with one
-  title fail with both ids.
-- **Saved as:** `media/tlg/examplechannel/Example_Channel/photo/2026-01-02_1234.jpg`
 
 ### loi (LOIBUS)
 

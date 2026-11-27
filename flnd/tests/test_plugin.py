@@ -306,8 +306,8 @@ class TypesTest(unittest.TestCase):
             ("mht?romance", "mht", "romance", True, "mht?romance"),
             ("https://www.example.com/example_user", "", "https://www.example.com/example_user",
              False, "https://www.example.com/example_user"),
-            ("tlg", "", "tlg", False, "tlg"),
-            ("tlg:", "tlg", "", False, "tlg"),
+            ("web", "", "web", False, "web"),
+            ("web:", "web", "", False, "web"),
         ]
         for written, code, value, query, shown in rows:
             with self.subTest(written):

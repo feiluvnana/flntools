@@ -731,7 +731,7 @@ class Ctx:
                              hint=f"run flnd auth login {code} in a terminal")
         if description:
             ui.info("{description}", description=description)
-        # On a thread, so the loop (a Telethon client's) runs on while a person types.
+        # On a thread, so the loop (an SDK client's) runs on while a person types.
         if choices:
             return str(await self._run.off(forms.choose, message, list(choices)))
         return await self._run.off(functools.partial(forms.ask, message, secret=secret))
@@ -1191,6 +1191,7 @@ class _Values(MutableMapping[str, Any]):
         data = self._data()
         with self._run._guard:
             return len(data)
+
 
 @contextlib.contextmanager
 def plugin_run(settings: RunShared, plugin: Plugin, *, jar: cookies.Jar | None = None,

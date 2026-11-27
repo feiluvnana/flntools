@@ -183,16 +183,16 @@ class LoginTest(AuthCase):
         self.assertEqual(kept_login("aaa")[1], {"session": "new", "api_id": "1"})
 
     def test_secrets_round_trip_through_the_json_file(self):
-        sign_in("tlg", session="1BVts-secret", api_id="2", api_hash="abc")
-        self.assertEqual(kept_login("tlg")[1], {"session": "1BVts-secret", "api_id": "2",
+        sign_in("ccc", session="1BVts-secret", api_id="2", api_hash="abc")
+        self.assertEqual(kept_login("ccc")[1], {"session": "1BVts-secret", "api_id": "2",
                                              "api_hash": "abc"})
         self.assertEqual(auth.secrets("nobody"), {})
-        (self.logins / "tlg.json").write_text("[1]")
+        (self.logins / "ccc.json").write_text("[1]")
         with self.assertRaisesRegex(LoginError, "isn't a login file"):
-            auth.secrets("tlg")
-        (self.logins / "tlg.json").write_text("{not json")
-        with self.assertRaisesRegex(LoginError, "can't read tlg.json"):
-            auth.secrets("tlg")
+            auth.secrets("ccc")
+        (self.logins / "ccc.json").write_text("{not json")
+        with self.assertRaisesRegex(LoginError, "can't read ccc.json"):
+            auth.secrets("ccc")
 
     def test_ask_answers_only_in_a_terminal_with_its_description(self):
         answers = []
@@ -231,16 +231,16 @@ class ListAndLogoutTest(AuthCase):
         sign_in("aaa", [{"name": "sid", "value": "v", "domain": ".aaa.example"}])
         self.assertEqual(auth.entry("aaa", self.plugin).status, "ok")
         self.assertIsNone(auth.entry("bbb", self.plugin))
-        sign_in("tlg", session="s")
-        self.assertEqual(auth.entry("tlg", self.plugin).file, str(self.logins / "tlg.json"))
+        sign_in("ccc", session="s")
+        self.assertEqual(auth.entry("ccc", self.plugin).file, str(self.logins / "ccc.json"))
         (self.logins / "aaa.txt").write_bytes(b"\xff\xfe")
         self.assertEqual(auth.entry("aaa", self.plugin).status, "unreadable")
 
     def test_the_codes_with_a_login_are_listed_in_order(self):
         self.assertEqual(auth.codes(), [])
-        sign_in("tlg", session="s")
+        sign_in("ccc", session="s")
         sign_in("aaa", [{"name": "sid", "value": "v", "domain": ".aaa.example"}])
-        self.assertEqual(auth.codes(), ["aaa", "tlg"])
+        self.assertEqual(auth.codes(), ["aaa", "ccc"])
 
     def test_logout_deletes_the_files_of_that_plugin_only(self):
         with self.assertRaisesRegex(UsageError, "aaa: not logged in"):
