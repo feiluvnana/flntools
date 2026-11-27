@@ -9,9 +9,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 
-# The limits: today's counts, rounded up to the next 100.
-CODE_LINES = 25416
-TEST_LINES = 30702
+# The limits: today's counts, rounded up to the next 5.
+CODE_LINES = 34740
+TEST_LINES = 30670
 
 
 def count(*patterns: str) -> int:
@@ -28,7 +28,8 @@ def over(what: str, lines: int, limit: int) -> str:
 
 class SizeTest(unittest.TestCase):
     def test_code_size(self):
-        lines = count("src/*.py", "src/*/*.py", "flnkit/*.py")
+        lines = count("src/*.py", "src/*/*.py", "../flnkit/flnkit/*.py",
+                      "../flnkit/flnkit/*/*.py")
         self.assertLessEqual(lines, CODE_LINES, over("src/ and flnkit/", lines, CODE_LINES))
 
     def test_test_size(self):
