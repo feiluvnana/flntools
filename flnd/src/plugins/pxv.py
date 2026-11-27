@@ -15,8 +15,10 @@ from urllib.parse import urlsplit
 
 from flnd.plugin import (
     Blocked,
+    Browser,
     Changed,
     Ctx,
+    Document,
     File,
     Hidden,
     LoginError,
@@ -40,6 +42,8 @@ SANITY_HINT = "log in, and turn on R-18 (and R-18G) in pixiv's settings: Viewing
 FRIENDS_HINT = "only the artist's My pixiv friends can see it"
 CAPTCHA_HINT = "open www.pixiv.net in your browser, solve it, then run again"
 REFERER = {"Referer": f"{SITE}/"}
+# The most seconds a person gets to solve Cloudflare's check in the browser window.
+CAPTCHA_TIMEOUT = 600
 # API requests between two long breaks, and the break's length in seconds (a person's pace).
 BREAK_EVERY = 100
 BREAK = (30.0, 60.0)
@@ -82,7 +86,10 @@ class Pixiv(Plugin):
     code = "pxv"
     name = "pixiv"
     domains = ("pixiv.net", "pixiv.me")
-    # Everything goes over HTTP; a browser comes only with the captcha step.
+    # Everything goes over HTTP. A tab opens only to let a person solve Cloudflare's check, and
+    # the check needs its images and scripts.
+    browser = Browser.ANY
+    assets = True
     login = cookies("PHPSESSID")
     # The least gap between two API requests; the plugin adds up to JITTER seconds to it.
     pace = 2.0
@@ -124,6 +131,10 @@ class Pixiv(Plugin):
         # One instance serves a run: its users' readers and its API request count.
         self._users: dict[str, _User] = {}
         self._calls = 0
+        self._solves = 0
+        self._failed = False
+        self._in_page = False
+        self._solving = asyncio.Lock()
 
     # -- routes -----------------------------------------------------------------------------
 
@@ -249,9 +260,59 @@ class Pixiv(Plugin):
         Raises:
             NotFound, Hidden, LoginError, Blocked, SiteError, Changed: as `_answer` says.
         """
+        if self._failed:
+            raise self._refusal()
         await self._ready(ctx)
-        response = await ctx.fetch(Request(f"{SITE}/ajax/{path}", check=False))
+        seen = self._solves
+        response = await self._send(ctx, path)
+        if _challenged(response):
+            await self._solve(ctx, seen)
+            self._tick(ctx)
+            response = await self._send(ctx, path)
+            if _challenged(response) and not self._in_page:
+                # The clearance may be bound to the browser's own TLS and User-Agent.
+                self._in_page = True
+                ctx.log("info", "pxv: the check came back; API requests now go from the tab")
+                self._tick(ctx)
+                response = await self._send(ctx, path)
+            if _challenged(response):
+                self._failed = True
+                raise self._refusal()
         return _answer(response, what, "PHPSESSID" in ctx.cookies)
+
+    async def _send(self, ctx: Ctx, path: str) -> Response:
+        return await ctx.fetch(Request(f"{SITE}/ajax/{path}", check=False),
+                               in_page=self._in_page)
+
+    def _refusal(self) -> Blocked:
+        return Blocked("pxv: pixiv.net wants a captcha", hint=CAPTCHA_HINT, retryable=False)
+
+    async def _solve(self, ctx: Ctx, seen: int) -> None:
+        """Have a person solve Cloudflare's check in a tab; one at a time, the others wait."""
+        async with self._solving:
+            if self._failed:
+                raise self._refusal()
+            if self._solves != seen:
+                return
+            try:
+                await ctx.open(f"{SITE}/")
+            except LoginError:
+                pass  # the challenge page's own 403; the tab still shows it
+
+            async def gone() -> bool:
+                return not _on_challenge(await ctx.document())
+
+            if not await gone() and not await ctx.handoff(
+                    "Solve the pixiv check in the browser window", until=gone,
+                    timeout=CAPTCHA_TIMEOUT):
+                self._failed = True
+                raise self._refusal()
+            self._solves += 1
+            budget = _budget(ctx)
+            budget["cap"] = max(1, budget["cap"] // 2)
+            ctx.state["budget"] = budget
+            ctx.log("info", "pxv: check solved; this hour's request budget is now {n}",
+                    n=budget["cap"])
 
     async def _ready(self, ctx: Ctx) -> None:
         """Wait as a person would before an API request: a gap, a break, the hourly budget."""
@@ -288,13 +349,32 @@ def _budget(ctx: Ctx) -> dict[str, int]:
     return {"hour": hour, "used": 0, "cap": max(1, limit)}
 
 
+def _challenged(response: Response) -> bool:
+    """Whether pixiv.net answered with Cloudflare's check: a 403 with `cf-mitigated:
+    challenge`, or an HTML page that is the check."""
+    host = urlsplit(response.url).hostname or ""
+    if host != "pixiv.net" and not host.endswith(".pixiv.net"):
+        return False
+    if response.status == 403 and response.headers.get("cf-mitigated") == "challenge":
+        return True
+    body = response.text
+    return "<title>Just a moment...</title>" in body or "challenge-platform" in body
+
+
+def _on_challenge(page: Document) -> bool:
+    """Whether the tab shows Cloudflare's check."""
+    title = page.first("title")
+    return ((title is not None and title.text.strip() == "Just a moment...")
+            or page.first('[src*="challenge-platform"]') is not None)
+
+
 def _answer(response: Response, what: str, logged: bool) -> Any:
     """The `body` of an API answer. Only the status, `error`, and the shape are read, never the
     message text, which is in the account's language.
 
     Raises:
         LoginError: a 401.
-        Blocked: a 429, or a Cloudflare challenge.
+        Blocked: a 429.
         NotFound: a 404, or `error` on an answer that isn't a refusal.
         Hidden: a 400 or 403 with `error`: R-18 setting, My pixiv or private.
         SiteError: another refusal.
@@ -305,8 +385,6 @@ def _answer(response: Response, what: str, logged: bool) -> Any:
         raise LoginError("pxv: pixiv refused the login", hint=LOGIN_HINT)
     if status == 429:
         raise Blocked("pxv: pixiv is limiting requests", hint="wait a while, then run again")
-    if status == 403 and "cf-mitigated" in response.headers:
-        raise Blocked("pxv: pixiv.net wants a captcha", hint=CAPTCHA_HINT, retryable=False)
     if status == 404:
         raise NotFound(f"pxv: {what} doesn't exist")
     if status >= 400 and status not in (400, 403):

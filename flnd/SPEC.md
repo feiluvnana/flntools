@@ -1160,7 +1160,8 @@ up to 32.
 
 ### pxv (pixiv)
 
-- **Reads:** pixiv's web JSON API over HTTP, `www.pixiv.net/ajax/...`; no browser. A user's works:
+- **Reads:** pixiv's web JSON API over HTTP, `www.pixiv.net/ajax/...`; a browser opens only for
+  Cloudflare's check (see Captcha). A user's works:
   `GET /ajax/user/<id>/profile/all` once for the run (`illusts` and `manga` are objects keyed by
   work id, or `[]` when empty), the ids sorted as numbers, newest first, then
   `/profile/illusts?ids[]=...&work_category=illustManga&is_first_page=0`, 100 ids a request
@@ -1180,9 +1181,9 @@ up to 32.
 - **Errors:** read from the status, `error` and the body's shape, never the message text. 404, or
   `error` on a 200, is `NotFound`; 400 or 403 with `error` is `Hidden` (with the hint `log in:
   flnd auth login pxv <file>` when logged out), not a login error; 401 is `LoginError`; 429 is a
-  block held for `Retry-After` when given; a 403 with `cf-mitigated` is `Blocked` (`pxv: pixiv.net
-  wants a captcha`, not retried; a browser window for it is a later step); HTML, or no `body`, is
-  `Changed`. A work with `isMasked`, or a thumbnail on `s.pximg.net/common/images/limit_...`, is
+  block held for `Retry-After` when given; Cloudflare's check is not an error answer but the
+  captcha step below; any other HTML, or no `body`, is `Changed`. A work with `isMasked`, or a
+  thumbnail on `s.pximg.net/common/images/limit_...`, is
   `Hidden`, only that post: `sanity_level` hints `log in, and turn on R-18 (and R-18G) in pixiv's
   settings: Viewing restrictions`, `mypixiv` hints `only the artist's My pixiv friends can see it`,
   `unviewable` has no hint.
@@ -1190,7 +1191,18 @@ up to 32.
   to 60 s break every 100 API requests; at most `requests_per_hour` (default 900, `[plugins.pxv]`)
   API requests an hour, counted in the plugin's state, then it pauses until the hour turns (`pxv:
   pausing until 14:00 UTC, hourly request budget`). Images: 4 at once from `i.pximg.net`.
-- **Known gaps:** not built yet: the captcha window, `ugoira`, `novels`, `profile`, `shiori` and
+- **Captcha:** an answer from pixiv.net is Cloudflare's check when it is a 403 with
+  `cf-mitigated: challenge`, or HTML holding `<title>Just a moment...</title>` or
+  `challenge-platform`. It opens `https://www.pixiv.net/` in a browser tab (`browser` is `any`;
+  none opens otherwise) and, if the tab shows the check, asks a person to solve it, up to 10
+  minutes; one target at a time, the others wait and reuse that solve. Then this hour's request
+  budget is halved (at least 1) and the request is made again over HTTP, with the browser's
+  cookies copied into the session. If that is checked again, every later API request of the run is
+  sent from the solved tab (`in_page`) and the request is made once more that way. If nobody
+  solves it, or the tab's request is checked too, every pxv target of the run fails with `pxv:
+  pixiv.net wants a captcha` (hint `open www.pixiv.net in your browser, solve it, then run again`)
+  and is never retried. Images from `i.pximg.net` are never checked.
+- **Known gaps:** not built yet: `ugoira`, `novels`, `profile`, `shiori` and
   `novelshiori` categories, novel targets and tag search. A work edited later isn't seen by a
   sync; a user's private works are never listed. Answer shapes beyond the live checks are
   unverified.

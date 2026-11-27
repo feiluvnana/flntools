@@ -6,7 +6,7 @@ import unittest
 from urllib.parse import unquote
 
 import no_profiles  # noqa: F401
-from plugin_kit import FakeCtx, Reply, check, collect
+from plugin_kit import FakeCtx, FakePage, Reply, check, collect
 
 from flnd.errors import Blocked, Changed, Hidden, LoginError, NotFound
 from flnd.plugin import Post, Target, UsageError
@@ -409,13 +409,6 @@ class ErrorsTest(unittest.TestCase):
         self.assertEqual(Pixiv().blocked(_status(429, {})), 0.0)
         self.assertIsNone(Pixiv().blocked(_status(403, {})))
 
-    def test_a_challenge_is_a_block_that_is_not_retried(self):
-        _, go = self.listing(Reply("<html>Just a moment...</html>", status=403,
-                                   headers={"cf-mitigated": "challenge"}))
-        with self.assertRaisesRegex(Blocked, "wants a captcha") as raised:
-            go()
-        self.assertFalse(raised.exception.retryable)
-
     def test_html_or_a_missing_body_is_changed(self):
         for reply in (Reply("<html></html>"), Reply({"error": False}), Reply([1]),
                       Reply({"message": "x", "body": {}})):
@@ -466,6 +459,139 @@ class PaceTest(unittest.TestCase):
         ctx = user_ctx(illusts=(1,), works={"1": work(1)})
         run(ctx, "illusts")
         self.assertEqual(ctx.state["budget"]["cap"], 900)
+
+
+CHECK_HTML = "<html><head><title>Just a moment...</title></head><body></body></html>"
+OPEN_HTML = "<html><head><title>pixiv</title></head><body></body></html>"
+CHECK_HEAD = {"cf-mitigated": "challenge"}
+
+
+def by_header(request=None):
+    return Reply("<html></html>", status=403, headers=CHECK_HEAD)
+
+
+def by_html(request=None):
+    return Reply(CHECK_HTML)
+
+
+class CaptchaTest(unittest.TestCase):
+    """Cloudflare's check: found by header or HTML, handed to a person once, then HTTP or the
+    tab."""
+
+    def setUp(self):
+        self.tab = {f"{SITE}/": FakePage(CHECK_HTML)}
+
+    def solving(self, ctx):
+        """A person who solves the check when asked: the tab shows pixiv afterwards."""
+        asked = []
+        orig = ctx.handoff
+
+        async def handoff(message, *, until, timeout=None):  # noqa: ASYNC109
+            asked.append((message, timeout))
+            ctx._tabs[-1].load(FakePage(OPEN_HTML))
+            return await orig(message, until=until, timeout=timeout)
+
+        ctx.handoff = handoff
+        return asked
+
+    def challenged(self, check, then, *, times=1):
+        """A profile route that is challenged `times` times and then answers `then`."""
+        count = {"n": 0}
+
+        def answer(request):
+            count["n"] += 1
+            return check() if count["n"] <= times else then
+        return answer
+
+    def test_a_challenge_is_found_by_header_or_by_html(self):
+        script = Reply("<script src='/cdn-cgi/challenge-platform/x'></script>")
+        for answer in (by_header, by_html, lambda request: script):
+            with self.subTest(answer=answer):
+                ctx = user_ctx(routes={f"{AJAX}/user/{USER}/profile/all": answer},
+                               pages=self.tab)
+                with self.assertRaisesRegex(Blocked, "pxv: pixiv.net wants a captcha"):
+                    run(ctx, "illusts")
+
+    def test_a_solved_check_retries_over_http_and_halves_the_budget(self):
+        ctx = user_ctx(illusts=(1,), works={"1": work(1)}, pages=self.tab, routes={
+            f"{AJAX}/user/{USER}/profile/all": self.challenged(by_header, profile((1,)))})
+        asked = self.solving(ctx)
+        self.assertEqual(ids(run(ctx, "illusts")), ["1"])
+        self.assertEqual(asked, [("Solve the pixiv check in the browser window", 600)])
+        self.assertEqual(ctx.state["budget"]["cap"], 450)
+        self.assertTrue(any("check solved" in text for _, text in ctx.seen.logs))
+        self.assertFalse(any(opts["in_page"] for _, _, opts in ctx.seen.requests))
+
+    def test_a_second_check_switches_to_the_tab(self):
+        ctx = user_ctx(illusts=(1,), works={"1": work(1)}, pages=self.tab, routes={
+            f"{AJAX}/user/{USER}/profile/all":
+                self.challenged(by_html, profile((1,)), times=2)})
+        self.solving(ctx)
+        self.assertEqual(ids(run(ctx, "illusts")), ["1"])
+        flags = [opts["in_page"] for _, _, opts in ctx.seen.requests]
+        self.assertEqual(flags, [False, False, True, True])
+        self.assertEqual(ctx.state["budget"]["cap"], 450)
+
+    def test_a_check_in_the_tab_fails_every_later_request(self):
+        plugin = Pixiv()
+        ctx = user_ctx(pages=self.tab, routes={f"{AJAX}/user/{USER}/profile/all": by_html})
+        ctx._plugin = plugin
+        self.solving(ctx)
+        with self.assertRaisesRegex(Blocked, "wants a captcha") as raised:
+            run(ctx, "illusts")
+        self.assertFalse(raised.exception.retryable)
+        self.assertEqual([opts["in_page"] for _, _, opts in ctx.seen.requests],
+                         [False, False, True])
+
+    def test_an_unsolved_check_fails_without_a_retry(self):
+        plugin = Pixiv()
+        first = FakeCtx(plugin, f"pxv:{USER}", pages=self.tab,
+                        routes={f"{AJAX}/user/{USER}/profile/all": by_header})
+        with self.assertRaisesRegex(Blocked, "^pxv: pixiv.net wants a captcha$") as raised:
+            run(first, "illusts")
+        self.assertFalse(raised.exception.retryable)
+        self.assertEqual(raised.exception.hint,
+                         "open www.pixiv.net in your browser, solve it, then run again")
+        self.assertEqual(len(first.seen.requests), 1)
+        again = FakeCtx(plugin, f"pxv:{USER}", routes={})
+        with self.assertRaisesRegex(Blocked, "wants a captcha"):
+            run(again, "illusts")
+        self.assertEqual(again.seen.requests, [])
+
+    def test_two_targets_share_one_solve(self):
+        plugin = Pixiv()
+        count = {"n": 0}
+
+        def listing(request):
+            count["n"] += 1
+            return by_header() if count["n"] <= 2 else profile((1,))
+
+        def make(user):
+            return FakeCtx(plugin, f"pxv:{user}", pages=self.tab, routes={
+                f"{AJAX}/user/{user}/profile/all": listing,
+                f"{AJAX}/user/{user}/profile/illusts": batch({"1": work(1)})})
+
+        one, two = make("111"), make("222")
+        opened = []
+        for ctx in (one, two):
+            orig = ctx.open
+
+            async def opening(url, orig=orig):
+                opened.append(url)
+                return await orig(url)
+            ctx.open = opening
+        self.solving(one)
+        self.solving(two)
+
+        async def both():
+            async def listing_of(ctx, user):
+                reader = await plugin.user(ctx, user)
+                return [item async for item in plugin.illusts(ctx, reader)]
+            return await asyncio.gather(listing_of(one, "111"), listing_of(two, "222"))
+
+        results = asyncio.run(both())
+        self.assertEqual(len(opened), 1)
+        self.assertEqual([ids(found) for found in results], [["1"], ["1"]])
 
 
 if __name__ == "__main__":
